@@ -14,6 +14,8 @@
 #include <mutex>
 #include <random>
 #include <span>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 
 #include <fmt/format.h>
@@ -39,6 +41,7 @@ constexpr std::size_t TocHeaderSize = 0x30;
 constexpr std::size_t TlvHeaderSize = 0x8;
 constexpr u32 TocMagic = 0x01434F54; // "TOC\x01" little-endian
 constexpr u8 CodecRaw = 0;
+constexpr std::array<u8, 4> ZstdMagic{0x28, 0xB5, 0x2F, 0xFD};
 constexpr u8 CodecZstd = 1;
 constexpr u8 PackageFlagStandaloneUpdate = 0x01;
 constexpr u32 MaxDirDepth = 128;
@@ -530,6 +533,8 @@ bool NupContainer::IsNupFile(const VirtualFile& file) {
 NupContainer::NupContainer(VirtualFile file_, std::size_t memory_cache_cap,
                            std::filesystem::path spill_dir_)
     : file(std::move(file_)), cache(std::make_shared<NupDecompressCache>()) {
+    const char* fallback = std::getenv("EDEN_NUP_DAMAGED_FALLBACK");
+    damaged_fallback = fallback == nullptr || std::string_view{fallback} != "0";
     cache->cap = memory_cache_cap;
     cache->spill_dir = spill_dir_.empty()
                            ? Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "nup"
@@ -873,26 +878,104 @@ VirtualFile NupContainer::OpenFile(std::size_t file_index) {
     if (file_index >= files.size()) {
         return nullptr;
     }
+    return OpenFileAs(file_index, files[file_index].name);
+}
+
+VirtualFile NupContainer::OpenFileAs(std::size_t file_index, const std::string& name) {
     const FileNode& node = files[file_index];
     if (node.size == 0) {
-        return std::make_shared<VectorVfsFile>(std::vector<u8>{}, node.name);
+        return std::make_shared<VectorVfsFile>(std::vector<u8>{}, name);
     }
     if (node.codec == CodecRaw) {
         return std::make_shared<OffsetVfsFile>(
             file, static_cast<std::size_t>(node.extent_size),
-            static_cast<std::size_t>(node.extent_offset), node.name);
+            static_cast<std::size_t>(node.extent_offset), name);
     }
     return std::make_shared<NupVfsFile>(file, node.extent_offset, node.extent_size, node.size,
-                                        node.name, cache, file_index);
+                                        name, cache, file_index);
+}
+
+bool NupContainer::LacksZstdMagic(std::size_t file_index) const {
+    const FileNode& node = files[file_index];
+    if (node.size < ZstdMagic.size()) {
+        return true;
+    }
+    std::array<u8, 4> head{};
+    if (node.codec == CodecRaw) {
+        if (file->Read(head.data(), head.size(), static_cast<std::size_t>(node.extent_offset)) !=
+            head.size()) {
+            return true;
+        }
+        return head != ZstdMagic;
+    }
+    // Decompress only the start of the extent: the first block yields the first bytes.
+    const auto compressed =
+        file->ReadBytes(static_cast<std::size_t>(std::min<u64>(node.extent_size, 128 * 1024)),
+                        static_cast<std::size_t>(node.extent_offset));
+    ZSTD_DStream* stream = ZSTD_createDStream();
+    ZSTD_inBuffer input{compressed.data(), compressed.size(), 0};
+    ZSTD_outBuffer output{head.data(), head.size(), 0};
+    while (output.pos < output.size && input.pos < input.size) {
+        if (ZSTD_isError(ZSTD_decompressStream(stream, &output, &input))) {
+            break;
+        }
+    }
+    ZSTD_freeDStream(stream);
+    return output.pos < output.size || head != ZstdMagic;
+}
+
+std::optional<std::size_t> NupContainer::FindStandIn(std::size_t damaged,
+                                                     std::span<const std::size_t> siblings) const {
+    // Same directory and same last name token ("Nrm.bntx.zs"), longest common name prefix,
+    // then the closest size: a texture of the same kind and, often, the same resolution.
+    const std::string& name = files[damaged].name;
+    const std::string_view suffix = std::string_view{name}.substr(name.rfind('_') + 1);
+    std::optional<std::size_t> best;
+    std::size_t best_prefix = 0;
+    u64 best_gap = 0;
+    for (const std::size_t candidate : siblings) {
+        const std::string& other = files[candidate].name;
+        if (candidate == damaged || other.size() <= suffix.size() || !other.ends_with(suffix) ||
+            other[other.size() - suffix.size() - 1] != '_') {
+            continue;
+        }
+        const auto mismatch = std::ranges::mismatch(name, other);
+        const auto prefix = static_cast<std::size_t>(mismatch.in1 - name.begin());
+        const u64 size = files[candidate].size;
+        const u64 gap = size > files[damaged].size ? size - files[damaged].size
+                                                   : files[damaged].size - size;
+        if (best && (prefix < best_prefix || (prefix == best_prefix && gap >= best_gap))) {
+            continue;
+        }
+        if (LacksZstdMagic(candidate)) {
+            continue;
+        }
+        best = candidate;
+        best_prefix = prefix;
+        best_gap = gap;
+    }
+    return best;
 }
 
 void NupContainer::BuildDirTree(u32 dir_index, VectorVfsDirectory& out) {
     const DirNode& node = dirs[dir_index];
     const u64 end = static_cast<u64>(node.first_child) + node.child_count;
+    std::vector<std::size_t> dir_files;
+    std::vector<std::size_t> damaged;
     for (u64 slot = node.first_child; slot < end; ++slot) {
         const u32 child = children[slot];
         if (child >= dirs.size()) {
-            out.AddFile(OpenFile(child - static_cast<u32>(dirs.size())));
+            const std::size_t index = child - static_cast<u32>(dirs.size());
+            dir_files.push_back(index);
+            // A game .zs is already compressed, so the NUP only recompresses one that shrinks,
+            // which a zeroed range does: only those members need their header checked.
+            const FileNode& member = files[index];
+            if (damaged_fallback && member.codec == CodecZstd && member.name.ends_with(".zs") &&
+                LacksZstdMagic(index)) {
+                damaged.push_back(index);
+            } else {
+                out.AddFile(OpenFile(index));
+            }
         } else {
             auto sub = std::make_shared<VectorVfsDirectory>(std::vector<VirtualFile>{},
                                                             std::vector<VirtualDir>{},
@@ -900,6 +983,17 @@ void NupContainer::BuildDirTree(u32 dir_index, VectorVfsDirectory& out) {
             BuildDirTree(child, *sub);
             out.AddDirectory(sub);
         }
+    }
+    for (const std::size_t index : damaged) {
+        const std::optional<std::size_t> stand_in = FindStandIn(index, dir_files);
+        if (!stand_in) {
+            LOG_WARNING(Loader, "NUP: {} has no zstd header and no stand-in", files[index].name);
+            out.AddFile(OpenFile(index));
+            continue;
+        }
+        LOG_WARNING(Loader, "NUP: {} has no zstd header (damaged dump), serving {} in its place",
+                    files[index].name, files[*stand_in].name);
+        out.AddFile(OpenFileAs(*stand_in, files[index].name));
     }
 }
 

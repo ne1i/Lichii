@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -64,6 +65,20 @@ public:
         std::vector<std::pair<std::string, std::vector<u8>>> localized_icons;
         std::string display_version;
     };
+    struct DirNode {
+        std::string name;
+        u32 first_child{};
+        u32 child_count{};
+    };
+
+    struct FileNode {
+        std::string name;
+        u64 size{};
+        std::array<u8, 0x20> sha256{};
+        u64 extent_offset{};
+        u64 extent_size{};
+        u8 codec{};
+    };
 
     /// Quick magic check without a full parse.
     static bool IsNupFile(const VirtualFile& file);
@@ -114,25 +129,17 @@ public:
     }
 
 private:
-    struct DirNode {
-        std::string name;
-        u32 first_child{};
-        u32 child_count{};
-    };
-
-    struct FileNode {
-        std::string name;
-        u64 size{};
-        std::array<u8, 0x20> sha256{};
-        u64 extent_offset{};
-        u64 extent_size{};
-        u8 codec{};
-    };
 
     bool Parse();
     bool ParseMeta(PackageInfo& package);
     bool ValidateDirTree() const;
     void BuildDirTree(u32 dir_index, VectorVfsDirectory& out);
+    VirtualFile OpenFileAs(std::size_t file_index, const std::string& name);
+    /// True when a member named .zs does not start with the zstd frame magic.
+    bool LacksZstdMagic(std::size_t file_index) const;
+    /// A sound sibling to serve in place of a damaged .zs member, if any.
+    std::optional<std::size_t> FindStandIn(std::size_t damaged,
+                                           std::span<const std::size_t> siblings) const;
     VirtualDir BuildPackageDir(u32 dir_index);
     std::vector<u8> ReadExtentRaw(const FileNode& node) const;
 
@@ -153,6 +160,11 @@ private:
     std::vector<VirtualDir> romfs_dir_cache;
 
     std::shared_ptr<NupDecompressCache> cache;
+
+    /// Some dumps carry .zs members whose start is zeroed (the game cannot load them, so the
+    /// model using them is never built); serve a sibling instead. EDEN_NUP_DAMAGED_FALLBACK=0
+    /// serves the members as stored.
+    bool damaged_fallback{};
 };
 
 } // namespace FileSys
