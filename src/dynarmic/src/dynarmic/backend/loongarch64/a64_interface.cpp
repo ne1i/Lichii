@@ -169,6 +169,15 @@ void Jit::InvalidateCacheRange(u64 start_address, std::size_t length) {
     impl->InvalidateCacheRange(start_address, length);
 }
 
+PrecompileResult Jit::Precompile(std::uint64_t, std::size_t) {
+    // Not implemented on this backend: nothing is compiled ahead.
+    return PrecompileResult::Full;
+}
+
+std::size_t Jit::CodeCacheUsed() const {
+    return 0;
+}
+
 void Jit::Reset() {
     impl->Reset();
 }
