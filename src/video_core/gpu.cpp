@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <list>
 #include <memory>
 #include <utility>
@@ -163,6 +164,7 @@ struct GPU::Impl {
         std::unique_lock lck{sync_request_mutex};
         const u64 fence = ++last_sync_fence;
         sync_requests.emplace_back(std::forward<Func>(action));
+        queued_sync_fence.store(fence, std::memory_order_release);
         return fence;
     }
 
@@ -184,6 +186,40 @@ struct GPU::Impl {
 
     /// Tick pending requests within the GPU.
     void TickWork() {
+        // EDEN_NX2_OPT_TICK_PEEK: every request queued so far has run (each one bumps
+        // current_sync_fence once it ran): none is left, so skip the lock. A request queued right
+        // after this check runs on the next call, as one queued right after the locked check did.
+        static const bool peek = [] {
+            const char* const value = std::getenv("EDEN_NX2_OPT_TICK_PEEK");
+            const bool on = value == nullptr || value[0] != '0';
+            LOG_INFO(HW_GPU, "EDEN_NX2_OPT_TICK_PEEK: {}", on ? "on" : "off");
+            return on;
+        }();
+        static const bool peek_verify = [] {
+            const char* const value = std::getenv("EDEN_NX2_OPT_TICK_PEEK_VERIFY");
+            const bool on = value != nullptr && value[0] == '1';
+            if (on) {
+                LOG_INFO(HW_GPU, "EDEN_NX2_OPT_TICK_PEEK_VERIFY: on");
+            }
+            return on;
+        }();
+        if (peek) {
+            const u64 queued = queued_sync_fence.load(std::memory_order_acquire);
+            if (queued == current_sync_fence.load(std::memory_order_acquire)) {
+                if (!peek_verify) {
+                    return;
+                }
+                // Nothing queued since the check, yet a request waits: the skip would miss it.
+                std::unique_lock lck{sync_request_mutex};
+                static std::atomic<u32> reports{};
+                if (last_sync_fence == queued && !sync_requests.empty() &&
+                    reports.fetch_add(1, std::memory_order_relaxed) < 16) {
+                    LOG_ERROR(HW_GPU,
+                              "TickWork peek verify: {} requests queued at fence {}, all seen as run",
+                              sync_requests.size(), queued);
+                }
+            }
+        }
         std::unique_lock lck{sync_request_mutex};
         while (!sync_requests.empty()) {
             auto request = std::move(sync_requests.front());
@@ -428,6 +464,8 @@ struct GPU::Impl {
     std::atomic<u64> current_sync_fence{};
     std::atomic<AmpereAnchor> ampere_anchor{};
     u64 last_sync_fence{};
+    /// last_sync_fence, stored after each request is queued (TickWork's check without the lock).
+    std::atomic<u64> queued_sync_fence{};
 
     VideoCommon::PendingMaps pending_maps;
     std::mutex sync_request_mutex;
