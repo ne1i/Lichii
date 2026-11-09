@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "common/assert.h"
+#include "common/nx2_guest_trace.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
@@ -174,6 +175,7 @@ struct GPU::Impl {
     }
 
     void WaitForSyncOperation(const u64 fence) {
+        const Common::Nx2GuestTrace::StallScope trace{Common::Nx2GuestTrace::Stall::GpuSync};
         std::unique_lock lck{sync_request_mutex};
         sync_request_cv.wait(lck, [this, fence] { return CurrentSyncRequestFence() >= fence; });
     }
@@ -300,6 +302,7 @@ struct GPU::Impl {
 
     /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
     void FlushRegion(DAddr addr, u64 size) {
+        const Common::Nx2GuestTrace::StallScope trace{Common::Nx2GuestTrace::Stall::GpuFlush};
         gpu_thread.FlushRegion(addr, size, is_async);
     }
 
@@ -309,6 +312,8 @@ struct GPU::Impl {
             return raster_area;
         }
         raster_area.preemtive = true;
+        const Common::Nx2GuestTrace::StallScope trace{Common::Nx2GuestTrace::Stall::CpuRead,
+                                                      Common::Nx2GuestTrace::CoreState::Fault};
         // A guest CPU read of GPU-written memory (reactive flushing): count them, they decide
         // whether buffer data must be copied back at every fence (EDEN_NX2_BUFFER_DOWNLOADS).
         if (static std::atomic<u64> reads{}; (reads.fetch_add(1, std::memory_order_relaxed) & 63) == 0) {
@@ -349,6 +354,8 @@ struct GPU::Impl {
 
     /// Notify rasterizer that any caches of the specified region should be invalidated
     void InvalidateRegion(DAddr addr, u64 size, bool preserve_gpu_writes) {
+        const Common::Nx2GuestTrace::StallScope trace{
+            Common::Nx2GuestTrace::Stall::GpuInvalidate};
         if (preserve_gpu_writes) {
             VideoCore::RasterizerInterface* rasterizer = renderer->ReadRasterizer();
             if (!rasterizer->TryCacheInvalidation(addr, size)) {
@@ -370,6 +377,7 @@ struct GPU::Impl {
 
     /// Notify rasterizer that any caches of the specified region should be flushed and invalidated
     void FlushAndInvalidateRegion(DAddr addr, u64 size) {
+        const Common::Nx2GuestTrace::StallScope trace{Common::Nx2GuestTrace::Stall::GpuFlush};
         gpu_thread.FlushAndInvalidateRegion(addr, size, is_async);
     }
 

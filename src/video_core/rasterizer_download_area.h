@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "common/common_types.h"
+#include "common/nx2_guest_trace.h"
 #include "video_core/nx2_async_readback.h"
 
 namespace VideoCore {
@@ -104,9 +105,11 @@ private:
             return;
         }
         state.waits.fetch_add(1, std::memory_order_relaxed);
+        const u64 trace_start = Common::Nx2GuestTrace::Begin();
         while (state.sequence.load(std::memory_order_acquire) == sequence) {
             std::this_thread::yield();
         }
+        Common::Nx2GuestTrace::End(Common::Nx2GuestTrace::Stall::DownloadLanding, trace_start);
     }
 
     static inline DownloadLandingState state;

@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include "common/assert.h"
+#include "common/nx2_guest_trace.h"
 #include "core/hle/kernel/k_interrupt_manager.h"
 #include "core/hle/kernel/k_spin_lock.h"
 #include "core/hle/kernel/k_thread.h"
@@ -33,7 +34,15 @@ public:
         } else {
             // Otherwise, we want to disable scheduling and acquire the spinlock.
             SchedulerType::DisableScheduling(m_kernel);
-            m_spin_lock.Lock();
+            if (!Common::Nx2GuestTrace::Enabled()) [[likely]] {
+                m_spin_lock.Lock();
+            } else if (!m_spin_lock.TryLock()) {
+                // Held by another thread: time the wait.
+                const u64 start = Common::Nx2GuestTrace::Ticks();
+                m_spin_lock.Lock();
+                Common::Nx2GuestTrace::AddStall(Common::Nx2GuestTrace::Stall::SchedulerLock,
+                                                start, Common::Nx2GuestTrace::Ticks());
+            }
 
             ASSERT(m_lock_count == 0);
             ASSERT(m_owner_thread == nullptr);

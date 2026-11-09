@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "common/common_types.h"
+#include "common/nx2_guest_trace.h"
 
 // EDEN_NX2_STUTTER_TRACE=1: per presented frame, the wall time each GPU thread (front, back,
 // VulkanWorker) spent by category, from the EDEN_NX2_GPU_PROFILE zones (nx2_profile.h maps each
@@ -20,6 +21,8 @@
 // lookups (Nx2StutterSummary); and the boot phases with the process memory (Nx2Boot).
 // tools/nx2/cache_metrics.py reads them. Frames longer than EDEN_NX2_STUTTER_DETAIL_MS (default
 // 50) also get an Nx2StutterDetail line: each thread's largest zones and the sites below that ran.
+// Nx2Stutter lines end with mono=<start>-<end>, the frame's two presents in steady_clock ns
+// (CLOCK_MONOTONIC on Linux), and are followed by the guest's side (common/nx2_guest_trace.h).
 namespace VideoCommon::StutterTrace {
 
 enum class Category : u8 {
@@ -121,6 +124,7 @@ inline bool g_enabled = ReadEnv();
 /// Called with Nx2Profile::ReadSwitch, once nx2_switches.txt is applied.
 inline void ReadSwitch() {
     g_enabled = ReadEnv();
+    Common::Nx2GuestTrace::ReadSwitch();
 }
 
 [[nodiscard]] inline bool Enabled() {

@@ -29,11 +29,13 @@
 #include "common/div_ceil.h"
 #include "common/dkb_frame_trace.h"
 #include "common/game_presets.h"
+#include "common/nx2_guest_trace.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "core/core.h"
 #include "core/arm/dynarmic/window_trace.h"
 #include "core/device_memory.h"
+#include "core/hle/kernel/k_thread.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 #include "core/frontend/framebuffer_layout.h"
@@ -1800,6 +1802,9 @@ private:
         ++m_presents;
         if (Common::DkbFrameTrace::Enabled()) {
             m_vsync->trace_present.store(m_presents, std::memory_order_relaxed);
+        }
+        if (Common::Nx2GuestTrace::Enabled()) {
+            Common::Nx2GuestTrace::OnGuestPresent(ctx.GetThread().GetThreadId());
         }
         const u64 present = Core::g_nx2_present_count.fetch_add(1, std::memory_order_relaxed) + 1;
         if (Core::g_nx2_present_time_services.load(std::memory_order_relaxed) != 0) {

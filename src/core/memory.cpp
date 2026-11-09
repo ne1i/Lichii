@@ -23,6 +23,7 @@
 #include "common/common_types.h"
 #include "common/heap_tracker.h"
 #include "common/logging.h"
+#include "common/nx2_guest_trace.h"
 #include "common/page_table.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -881,6 +882,9 @@ struct Memory::Impl {
     }
 
     void HandleRasterizerDownload(VAddr v_address, size_t size) {
+        if (Common::Nx2GuestTrace::Enabled()) {
+            Common::Nx2GuestTrace::CountStall(Common::Nx2GuestTrace::Stall::MemoryRead);
+        }
         const auto* p = GetPointerImpl(
             v_address, []() {}, []() {});
         if (!gpu_device_memory) [[unlikely]] {
@@ -922,6 +926,7 @@ struct Memory::Impl {
     }
 
     void HandleRasterizerWrite(VAddr v_address, size_t size) {
+        const Common::Nx2GuestTrace::StallScope trace{Common::Nx2GuestTrace::Stall::MemoryWrite};
         const auto* p = GetPointerImpl(
             v_address, []() {}, []() {});
         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
