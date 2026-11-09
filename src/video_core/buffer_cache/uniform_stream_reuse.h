@@ -12,6 +12,7 @@
 #include <type_traits>
 
 #include "common/common_types.h"
+#include "common/logging.h"
 
 namespace VideoCommon {
 
@@ -38,6 +39,35 @@ concept StreamUniformReusable = requires(R& runtime, u32 size) {
         return value == nullptr || value[0] != '0';
     }();
     return enabled;
+}
+
+/// EDEN_NX2_OPT_UBO_DIRECT=0: BindSmallUniformReusing copies guest memory to a scratch buffer
+/// before comparing it, as before. On by default: when the range is contiguous host memory, it
+/// compares against guest memory in place and copies once, into the slot (and from there into the
+/// stream buffer), saving one copy of the uniform buffer per bind.
+[[nodiscard]] inline bool UniformDirectCompareEnabled() noexcept {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_OPT_UBO_DIRECT");
+        const bool on = value == nullptr || value[0] != '0';
+        LOG_INFO(HW_GPU, "EDEN_NX2_OPT_UBO_DIRECT: {}", on ? "on" : "off");
+        return on;
+    }();
+    return enabled;
+}
+
+/// EDEN_NX2_OPT_UBO_DIRECT_VERIFY=1: each direct bind also makes the scratch copy and checks that
+/// it decides the same and leaves the same bytes in the slot (concurrent guest writes can make it
+/// differ by timing alone).
+[[nodiscard]] inline bool UniformDirectCompareVerify() noexcept {
+    static const bool verify = [] {
+        const char* const value = std::getenv("EDEN_NX2_OPT_UBO_DIRECT_VERIFY");
+        const bool on = value != nullptr && value[0] == '1';
+        if (on) {
+            LOG_INFO(HW_GPU, "EDEN_NX2_OPT_UBO_DIRECT_VERIFY: on");
+        }
+        return on;
+    }();
+    return verify;
 }
 
 template <class Ref>
@@ -99,6 +129,58 @@ template <class Runtime, class DeviceMemory>
     Reuse& reuse = UniformStreamReuseState<typename Runtime::StreamUniformRef>();
     typename Reuse::Slot& slot = reuse.slots[stage][index];
     u8* const scratch = reuse.scratch.data();
+    if constexpr (requires { device_memory.GetSpan(device_addr, size_t{size}); }) {
+        // EDEN_NX2_OPT_UBO_DIRECT: the same decisions and bytes as below, without the scratch
+        // copy. The stream allocation is filled from the slot, not from guest memory again, so
+        // that it holds the bytes the slot compares against even if the guest writes meanwhile.
+        const u8* const guest = UniformDirectCompareEnabled()
+                                    ? device_memory.GetSpan(device_addr, size_t{size})
+                                    : nullptr;
+        if (guest != nullptr) {
+            const bool verify = UniformDirectCompareVerify();
+            if (verify) {
+                device_memory.ReadBlockUnsafe(device_addr, scratch, size);
+            }
+            const bool same_bytes =
+                slot.size == size && std::memcmp(slot.bytes.data(), guest, size) == 0;
+            if (verify) {
+                const bool scratch_same =
+                    slot.size == size && std::memcmp(slot.bytes.data(), scratch, size) == 0;
+                static u32 reports{};
+                if (scratch_same != same_bytes && reports < 16) {
+                    ++reports;
+                    LOG_ERROR(HW_GPU,
+                              "UBO direct verify: stage {} slot {} at {:#x}+{:#x}: direct compare "
+                              "says {}, scratch compare says {}",
+                              stage, index, device_addr, size, same_bytes, scratch_same);
+                }
+            }
+            slot.device_addr = device_addr;
+            if (same_bytes && slot.tick == runtime.CurrentTick()) {
+                runtime.RebindStreamUniform(slot.ref, size);
+                return true;
+            }
+            if (!same_bytes) {
+                slot.size = size;
+                std::memcpy(slot.bytes.data(), guest, size);
+            }
+            const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
+            std::memcpy(span.data(), slot.bytes.data(), size);
+            slot.ref = runtime.LastStreamUniformRef();
+            slot.tick = runtime.CurrentTick();
+            if (verify && std::memcmp(slot.bytes.data(), scratch, size) != 0) {
+                static u32 reports{};
+                if (reports < 16) {
+                    ++reports;
+                    LOG_ERROR(HW_GPU,
+                              "UBO direct verify: stage {} slot {} at {:#x}+{:#x}: streamed bytes "
+                              "differ from the scratch copy",
+                              stage, index, device_addr, size);
+                }
+            }
+            return true;
+        }
+    }
     device_memory.ReadBlockUnsafe(device_addr, scratch, size);
 
     const bool same_bytes =
