@@ -1394,7 +1394,7 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
                 .payload_words = mesh_emulation->payload_stride,
                 .capacity_words = capacity,
                 .block_words = mesh_emulation->block_words,
-                .vertices_per_group = mesh_emulation->max_primitives * 3,
+                .vertices_per_group = MeshEmulationVerticesPerGroup(),
                 .max_groups = device.GetMaxComputeWorkGroupCount()[0],
             };
             cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *distribution_pipeline);
@@ -2009,11 +2009,14 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         .vertexAttributeDescriptionCount = 0,
         .pVertexAttributeDescriptions = nullptr,
     };
+    const u32 emulation_corners{mesh_emulation ? mesh_emulation->primitive_vertices : 3U};
     const VkPipelineInputAssemblyStateCreateInfo emulation_input_assembly{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .topology = emulation_corners == 1   ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+                    : emulation_corners == 2 ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST
+                                             : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
         .primitiveRestartEnable = VK_FALSE,
     };
     VkPipelineCreateFlags flags{};

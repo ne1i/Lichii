@@ -354,6 +354,7 @@ private:
         u32 vertex_lines{};
         u32 max_vertices{};
         u32 max_primitives{};
+        u32 primitive_vertices{3};
         std::array<u32, 4> position_lines{};
         bool pending{};
     } mesh_probe;

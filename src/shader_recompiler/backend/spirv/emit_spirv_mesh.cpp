@@ -204,24 +204,27 @@ void ComputeMeshEpilogue(EmitContext& ctx) {
             copy();
         }
     }
-    // Primitive p: its three vertex indices, or 0 0 0 (a degenerate triangle) past the count.
+    // Primitive p: its k vertex indices (map bytes 4 + k * p). Past the count: 0 0 0 for a
+    // triangle (degenerate), MESH_EMULATION_UNUSED_VERTEX for a point or a line.
+    const u32 corners{mesh.PrimitiveVertices()};
+    const Id unused_vertex{corners == 3 ? ctx.u32_zero_value
+                                        : ctx.Const(MESH_EMULATION_UNUSED_VERTEX)};
     const Id index_base{ctx.OpIAdd(ctx.U32[1], block, ctx.Const(vertex_words))};
     for (u32 first = 0; first < mesh.max_primitives; first += threads) {
         const Id primitive{ctx.OpIAdd(ctx.U32[1], invocation, ctx.Const(first))};
         const auto write = [&] {
             const Id used{ctx.OpULessThan(ctx.U1, primitive, count)};
-            const Id byte{ctx.OpIAdd(ctx.U32[1], ctx.OpIMul(ctx.U32[1], primitive, ctx.Const(3U)),
-                                     ctx.Const(4U))};
-            const Id destination{ctx.OpIAdd(
-                ctx.U32[1], index_base, ctx.OpIMul(ctx.U32[1], primitive, ctx.Const(3U)))};
-            for (u32 element = 0; element < 3; ++element) {
+            const Id offset{ctx.OpIMul(ctx.U32[1], primitive, ctx.Const(corners))};
+            const Id byte{ctx.OpIAdd(ctx.U32[1], offset, ctx.Const(4U))};
+            const Id destination{ctx.OpIAdd(ctx.U32[1], index_base, offset)};
+            for (u32 element = 0; element < corners; ++element) {
                 const Id map_index{
                     Clamped(ctx, ctx.OpIAdd(ctx.U32[1], byte, ctx.Const(element)),
                             ctx.mesh_map_bytes)};
                 const Id value{ctx.OpLoad(ctx.U32[1], SharedWord(ctx, ctx.mesh_map, map_index))};
                 ctx.OpStore(
                     OutputWord(ctx, ctx.OpIAdd(ctx.U32[1], destination, ctx.Const(element))),
-                    ctx.OpSelect(ctx.U32[1], used, value, ctx.u32_zero_value));
+                    ctx.OpSelect(ctx.U32[1], used, value, unused_vertex));
             }
         };
         if (first + threads > mesh.max_primitives) {
@@ -452,13 +455,14 @@ void EmitMeshEpilogue(EmitContext& ctx) {
 }
 
 std::vector<u32> EmitMeshEmulationVertex(const Profile& profile, const MeshInfo& mesh, u32 binding,
-                                         u32 args_binding, bool convert_depth) {
+                                         u32 args_binding, bool convert_depth, float point_size) {
     Sirit::Module module{profile.supported_spirv};
     module.AddCapability(spv::Capability::Shader);
     module.SetMemoryModel(spv::AddressingModel::Logical, spv::MemoryModel::GLSL450);
     module.AddExtension("SPV_KHR_storage_buffer_storage_class");
 
     const Id void_type{module.TypeVoid()};
+    const Id bool_type{module.TypeBool()};
     const Id u32_type{module.TypeInt(32, false)};
     const Id s32_type{module.TypeInt(32, true)};
     const Id f32_type{module.TypeFloat(32)};
@@ -503,6 +507,26 @@ std::vector<u32> EmitMeshEmulationVertex(const Profile& profile, const MeshInfo&
     const Id position{module.AddGlobalVariable(output_vec4, spv::StorageClass::Output)};
     module.Decorate(position, spv::Decoration::BuiltIn, spv::BuiltIn::Position);
     interfaces.push_back(position);
+    // A point list needs a size per vertex.
+    const u32 corners{mesh.PrimitiveVertices()};
+    Id point_size_output{};
+    if (corners == 1) {
+        point_size_output = module.AddGlobalVariable(output_f32, spv::StorageClass::Output);
+        module.Decorate(point_size_output, spv::Decoration::BuiltIn, spv::BuiltIn::PointSize);
+        interfaces.push_back(point_size_output);
+    }
+    // Points and lines past the primitive count are culled with a clip distance: a repeated
+    // index is not degenerate for them, and a position outside the view volume alone still let
+    // RADV draw such points.
+    Id clip_distance{};
+    if (corners != 3) {
+        module.AddCapability(spv::Capability::ClipDistance);
+        const Id clip_array{module.TypeArray(f32_type, constant(1))};
+        clip_distance = module.AddGlobalVariable(
+            module.TypePointer(spv::StorageClass::Output, clip_array), spv::StorageClass::Output);
+        module.Decorate(clip_distance, spv::Decoration::BuiltIn, spv::BuiltIn::ClipDistance);
+        interfaces.push_back(clip_distance);
+    }
     std::array<Id, IR::NUM_GENERICS> generics{};
     for (const u32 line : mesh.vertex_lines) {
         const IR::Attribute attribute{line};
@@ -532,11 +556,11 @@ std::vector<u32> EmitMeshEmulationVertex(const Profile& profile, const MeshInfo&
     };
     const u32 vertex_lines{static_cast<u32>(mesh.vertex_lines.size())};
     const u32 max_primitives{(std::max)(mesh.max_primitives, 1U)};
-    // Vertex i of the draw: corner i % 3 of primitive slot i / 3, which belongs to workgroup
-    // slot / max_primitives.
+    // Vertex i of the draw: corner i % k of primitive slot i / k (k vertices per primitive),
+    // which belongs to workgroup slot / max_primitives.
     const Id draw_vertex{module.OpBitcast(u32_type, module.OpLoad(s32_type, vertex_index))};
-    const Id slot{module.OpUDiv(u32_type, draw_vertex, constant(3))};
-    const Id corner{module.OpUMod(u32_type, draw_vertex, constant(3))};
+    const Id slot{module.OpUDiv(u32_type, draw_vertex, constant(corners))};
+    const Id corner{module.OpUMod(u32_type, draw_vertex, constant(corners))};
     const Id workgroup{module.OpUDiv(u32_type, slot, constant(max_primitives))};
     const Id primitive{module.OpUMod(u32_type, slot, constant(max_primitives))};
     Id block{module.OpIMul(u32_type, workgroup, constant(MeshEmulationBlockWords(mesh)))};
@@ -548,13 +572,17 @@ std::vector<u32> EmitMeshEmulationVertex(const Profile& profile, const MeshInfo&
     }
     const Id index_word{module.OpIAdd(
         u32_type, module.OpIAdd(u32_type, block, constant(mesh.max_vertices * vertex_lines)),
-        module.OpIAdd(u32_type, module.OpIMul(u32_type, primitive, constant(3)), corner))};
-    const Id vertex{module.OpUMin(u32_type, load(index_word),
-                                  constant((std::max)(mesh.max_vertices, 1U) - 1))};
+        module.OpIAdd(u32_type, module.OpIMul(u32_type, primitive, constant(corners)), corner))};
+    const Id index{load(index_word)};
+    const Id vertex{
+        module.OpUMin(u32_type, index, constant((std::max)(mesh.max_vertices, 1U) - 1))};
     const Id vertex_base{
         module.OpIAdd(u32_type, block, module.OpIMul(u32_type, vertex, constant(vertex_lines)))};
 
     module.OpStore(position, default_vec4);
+    if (Sirit::ValidId(point_size_output)) {
+        module.OpStore(point_size_output, module.Constant(f32_type, point_size));
+    }
     for (const Id generic : generics) {
         if (Sirit::ValidId(generic)) {
             module.OpStore(generic, default_vec4);
@@ -579,6 +607,8 @@ std::vector<u32> EmitMeshEmulationVertex(const Profile& profile, const MeshInfo&
                                                 generics[IR::GenericAttributeIndex(attribute)],
                                                 constant(IR::GenericAttributeElement(attribute))),
                            value);
+        } else if (attribute == IR::Attribute::PointSize && Sirit::ValidId(point_size_output)) {
+            module.OpStore(point_size_output, value);
         }
     }
     // OpenGL-style clip space, as the mesh epilogue's ConvertDepth: z = (z + w) / 2.
@@ -586,6 +616,21 @@ std::vector<u32> EmitMeshEmulationVertex(const Profile& profile, const MeshInfo&
         const Id z{module.OpFMul(f32_type, module.OpFAdd(f32_type, position_z, position_w),
                                  module.Constant(f32_type, 0.5f))};
         module.OpStore(module.OpAccessChain(output_f32, position, constant(2)), z);
+    }
+    // A point or line past the primitive count: outside the clip volume (x and y beyond w), so
+    // nothing is drawn for it.
+    if (corners != 3) {
+        const Id outside{module.ConstantComposite(
+            vec4_type, std::array<Id, 4>{module.Constant(f32_type, 2.0f),
+                                         module.Constant(f32_type, 2.0f), zero_f, one_f})};
+        const Id unused{module.OpIEqual(bool_type, index, constant(MESH_EMULATION_UNUSED_VERTEX))};
+        const Id unused4{module.OpCompositeConstruct(module.TypeVector(bool_type, 4), unused,
+                                                     unused, unused, unused)};
+        module.OpStore(position, module.OpSelect(vec4_type, unused4, outside,
+                                                 module.OpLoad(vec4_type, position)));
+        module.OpStore(module.OpAccessChain(output_f32, clip_distance, constant(0)),
+                       module.OpSelect(f32_type, unused, module.Constant(f32_type, -1.0f),
+                                       one_f));
     }
     module.OpReturn();
     module.OpFunctionEnd();
