@@ -14,8 +14,11 @@
 #include <vector>
 #include "common/assert.h"
 #include "common/logging.h"
+#include "common/nx2_guest_trace.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_thread.h"
+#include "core/hle/kernel/kernel.h"
 #include "core/hle/service/nvdrv/core/container.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
 #include "core/hle/service/nvdrv/core/syncpoint_manager.h"
@@ -414,6 +417,11 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
     LOG_TRACE(Service_NVDRV, "called, gpfifo={:X}, num_entries={:X}, flags={:X}", params.address,
               params.num_entries, params.flags.raw);
 
+    const Common::Nx2GuestTrace::StallScope trace{Common::Nx2GuestTrace::Stall::GpuSubmit};
+    if (Common::Nx2GuestTrace::Enabled()) {
+        Common::Nx2GuestTrace::OnGpuSubmit(
+            Kernel::GetCurrentThread(system.Kernel()).GetThreadId());
+    }
     auto& gpu = system.GPU();
 
     std::unique_lock lock(channel_mutex);

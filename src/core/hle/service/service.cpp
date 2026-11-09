@@ -19,10 +19,12 @@
 #include <fmt/ranges.h>
 #include "common/assert.h"
 #include "common/logging.h"
+#include "common/nx2_guest_trace.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/hle/ipc.h"
 #include "core/hle/kernel/k_event.h"
+#include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
@@ -264,7 +266,14 @@ void CountRequest(const std::string& service, u32 command, u32 type, u32 result)
 
 Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
                                                HLERequestContext& ctx) {
+    const bool traced = Common::Nx2GuestTrace::Enabled();
+    const Common::Nx2GuestTrace::IpcScope trace{
+        service_name, traced ? u32{ctx.GetCommand()} : u32{0},
+        traced ? Kernel::GetCurrentThread(system.Kernel()).GetThreadId() : u64{0},
+        traced ? ctx.GetThread().GetThreadId() : u64{0}};
+    const u64 lock_start = Common::Nx2GuestTrace::Begin();
     const auto guard = LockService();
+    Common::Nx2GuestTrace::End(Common::Nx2GuestTrace::Stall::ServiceLock, lock_start);
     SCOPE_EXIT {
         const auto* cmd_buf = ctx.CommandBuffer();
         u32 result_word = 0;
