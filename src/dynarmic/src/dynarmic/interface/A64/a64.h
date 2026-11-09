@@ -21,6 +21,13 @@
 namespace Dynarmic {
 namespace A64 {
 
+enum class PrecompileResult {
+    Compiled,   ///< Compiled now
+    Present,    ///< Already in the code cache
+    Unreadable, ///< Part of the block is not readable code: nothing was emitted
+    Full,       ///< Less code space left than asked to keep free: nothing was emitted
+};
+
 class Jit final {
 public:
     explicit Jit(UserConfig conf);
@@ -50,6 +57,17 @@ public:
      * @param length The length (in bytes) of the range to invalidate.
      */
     void InvalidateCacheRange(std::uint64_t start_address, std::size_t length);
+
+    /**
+     * Compiles the block at location (an IR::LocationDescriptor value) as if execution had
+     * reached it, without running anything. Leaves the guest state alone.
+     * Only from the thread that calls Run, while Run is not executing.
+     * @param keep_free Code space (bytes) to leave free: Full when the block could not.
+     */
+    PrecompileResult Precompile(std::uint64_t location, std::size_t keep_free);
+
+    /// Bytes of the code cache in use.
+    std::size_t CodeCacheUsed() const;
 
     /**
      * Reset CPU state to state at startup. Does not clear code cache.

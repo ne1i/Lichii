@@ -349,7 +349,10 @@ Xbyak::Label EmitX64::EmitCond(IR::Cond cond) {
 }
 
 EmitX64::BlockDescriptor EmitX64::RegisterBlock(const IR::LocationDescriptor& descriptor, CodePtr entrypoint, size_t size) {
-    PerfMapRegister(entrypoint, code.getCurr(), LocationDescriptorToFriendlyName(descriptor));
+    // Each register takes a process-wide lock and reads the environment: not without a perf map.
+    if (PerfMapEnabled()) {
+        PerfMapRegister(entrypoint, code.getCurr(), LocationDescriptorToFriendlyName(descriptor));
+    }
     Patch(descriptor, entrypoint);
 
     BlockDescriptor block_desc{entrypoint, size};

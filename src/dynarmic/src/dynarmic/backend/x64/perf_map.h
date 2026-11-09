@@ -23,10 +23,13 @@ void PerfMapRegister(T start, const void* end, std::string_view friendly_name) n
     detail::PerfMapRegister(std::bit_cast<const void*>(start), end, friendly_name);
 }
 void PerfMapClear();
+/// PERF_BUILDID_DIR is set (read once): blocks need a perf map name.
+bool PerfMapEnabled() noexcept;
 #else
 // Resolve to no-op (compiler thinks fmt has side effects)
 template<typename T> inline void PerfMapRegister(T, const void*, std::string_view) noexcept {}
 inline void PerfMapClear() noexcept {}
+inline bool PerfMapEnabled() noexcept { return false; }
 #endif
 
 }  // namespace Dynarmic::Backend::X64

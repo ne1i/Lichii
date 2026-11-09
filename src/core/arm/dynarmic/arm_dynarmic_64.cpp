@@ -13,6 +13,7 @@
 #include "core/arm/dynarmic/arm_dynarmic.h"
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
 #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
+#include "core/arm/dynarmic/jit_warmup.h"
 #include "core/arm/dynarmic/window_trace.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_process.h"
@@ -266,6 +267,12 @@ u64 DynarmicCallbacks64::GetCNTPCT() {
     return ticks;
 }
 
+void DynarmicCallbacks64::BlockCompiled(u64 location) {
+    if (m_parent.m_warmup) {
+        m_parent.m_warmup->OnCompiled(m_parent.m_core_index, location);
+    }
+}
+
 bool DynarmicCallbacks64::CheckMemoryAccess(u64 addr, u64 size, Kernel::DebugWatchpointType type) {
     if (!m_check_memory_access) {
         return true;
@@ -456,6 +463,19 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         config.fastmem_pointer = std::nullopt;
         config.fastmem_exclusive_access = false;
     }
+    // The IR verification pass only asserts, and builds a hash map per compiled block.
+    // EDEN_NX2_JIT_FAST_COMPILE=0 keeps it.
+    static const bool fast_compile = [] {
+        const char* value = std::getenv("EDEN_NX2_JIT_FAST_COMPILE");
+        const bool enabled = value == nullptr || value[0] != '0';
+        LOG_INFO(Core_ARM, "EDEN_NX2_JIT_FAST_COMPILE: IR verification {}",
+                 enabled ? "skipped" : "kept");
+        return enabled;
+    }();
+    if (fast_compile && Settings::values.cpu_accuracy.GetValue() != Settings::CpuAccuracy::Debugging &&
+        Settings::values.cpu_accuracy.GetValue() != Settings::CpuAccuracy::Paranoid) {
+        config.optimizations |= Dynarmic::OptimizationFlag::DisableVerification;
+    }
     m_jit.emplace(config);
 }
 
@@ -552,6 +572,14 @@ void ArmDynarmic64::SignalInterrupt(Kernel::KThread* thread) {
 void ArmDynarmic64::ClearInstructionCache() {
     m_cb->last_code_addr = u64(-1);
     m_jit->ClearCache();
+}
+
+void ArmDynarmic64::SetJitWarmup(std::shared_ptr<JitWarmup> warmup) {
+    m_warmup = std::move(warmup);
+}
+
+bool ArmDynarmic64::WarmUp(const std::atomic<bool>& stop) {
+    return m_warmup && m_warmup->Run(m_core_index, *m_jit, stop);
 }
 
 void ArmDynarmic64::InvalidateCacheRange(u64 addr, std::size_t size) {

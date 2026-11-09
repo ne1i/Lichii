@@ -129,6 +129,10 @@ struct UserCallbacks {
     virtual std::uint64_t GetTicksRemaining() = 0;
     // Get value in the emulated counter-timer physical count register.
     virtual std::uint64_t GetCNTPCT() = 0;
+
+    // A block was compiled because execution reached it (not for Jit::Precompile). location is
+    // the block's IR::LocationDescriptor value.
+    virtual void BlockCompiled(std::uint64_t /*location*/) {}
 };
 
 struct UserConfig {
