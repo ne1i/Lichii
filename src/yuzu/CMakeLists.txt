@@ -80,6 +80,8 @@ add_executable(yuzu
     configuration/configure_general.ui
     configuration/configure_graphics.cpp
     configuration/configure_graphics.h
+    configuration/amd_fsr4_panel.cpp
+    configuration/amd_fsr4_panel.h
     configuration/nvidia_dlss_panel.cpp
     configuration/nvidia_dlss_panel.h
     configuration/configure_graphics.ui
