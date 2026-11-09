@@ -291,6 +291,76 @@ ConfigureFuncPtr ConfigureFunc(const std::array<bool, NUM_STAGES>& stages,
 }
 
 std::atomic<std::chrono::nanoseconds::rep> hold_time_ns{};
+
+struct WorkerWaitConfig {
+    bool limited;
+    std::chrono::microseconds limit;
+};
+
+// EDEN_NX2_FIX_WORKER_PIPELINE_WAIT (default on; =0 waits for every build as before): the Vulkan
+// worker waits for a draw's unbuilt pipeline at most EDEN_NX2_WORKER_PIPELINE_WAIT_MS (default 50)
+// in total per pipeline, then drops that pipeline's draws until it is built. While the worker
+// waits, nothing recorded after the draw is submitted, guest read-back downloads included.
+const WorkerWaitConfig& WorkerPipelineWait() {
+    static const WorkerWaitConfig config = [] {
+        const char* const fix = std::getenv("EDEN_NX2_FIX_WORKER_PIPELINE_WAIT");
+        const bool limited = fix == nullptr || fix[0] != '0';
+        u64 limit_ms = 50;
+        if (const char* const value = std::getenv("EDEN_NX2_WORKER_PIPELINE_WAIT_MS")) {
+            limit_ms = std::strtoull(value, nullptr, 10);
+        }
+        if (limited) {
+            LOG_INFO(Render_Vulkan,
+                     "EDEN_NX2_FIX_WORKER_PIPELINE_WAIT: the Vulkan worker waits up to {} ms per "
+                     "unbuilt pipeline, then drops its draws until it is built",
+                     limit_ms);
+        } else {
+            LOG_INFO(Render_Vulkan,
+                     "EDEN_NX2_FIX_WORKER_PIPELINE_WAIT=0: the Vulkan worker waits for every build");
+        }
+        return WorkerWaitConfig{limited,
+                                std::chrono::milliseconds{static_cast<s64>(limit_ms)}};
+    }();
+    return config;
+}
+
+// Vulkan worker only: its waits for unbuilt graphics pipelines, each over 20 ms logged (up to 200)
+// and a summary every 10 s.
+void ReportWorkerPipelineWait(u64 hash, std::chrono::microseconds spent, bool built) {
+    using Clock = std::chrono::steady_clock;
+    static u64 waits{};
+    static u64 dropped{};
+    static std::chrono::microseconds total{};
+    static std::chrono::microseconds longest{};
+    static u32 logged{};
+    static Clock::time_point next_report = Clock::now() + std::chrono::seconds{10};
+    ++waits;
+    dropped += built ? 0 : 1;
+    total += spent;
+    longest = (std::max)(longest, spent);
+    const double spent_ms = static_cast<double>(spent.count()) / 1000.0;
+    if (spent >= std::chrono::milliseconds{20} && logged < 200) {
+        ++logged;
+        LOG_INFO(Render_Vulkan, "Vulkan worker waited {:.1f} ms for graphics pipeline {:016x}: {}",
+                 spent_ms, hash,
+                 built ? "built" : "still building, its draws are dropped until it is built");
+    }
+    const Clock::time_point now = Clock::now();
+    if (now < next_report) {
+        return;
+    }
+    LOG_INFO(Render_Vulkan,
+             "Vulkan worker pipeline waits in the last 10 s or more: {} draws, {:.1f} ms, longest "
+             "{:.1f} ms, {} draws dropped",
+             waits, static_cast<double>(total.count()) / 1000.0,
+             static_cast<double>(longest.count()) / 1000.0, dropped);
+    waits = 0;
+    dropped = 0;
+    total = {};
+    longest = {};
+    next_report = now + std::chrono::seconds{10};
+}
+
 // EDEN_NX2_TEXTURE_MEMO_VERIFY=1, read once: draws resolved from a memo are also resolved in full
 // and compared.
 bool TextureMemoVerify() {
@@ -372,6 +442,34 @@ void ReportTextureMemo() {
 
 std::chrono::nanoseconds GraphicsPipeline::TakeHoldTime() noexcept {
     return std::chrono::nanoseconds{hold_time_ns.exchange(0, std::memory_order::relaxed)};
+}
+
+bool GraphicsPipeline::WorkerWaitBuild() {
+    if (build->IsBuilt()) {
+        worker_drops = false;
+        return true;
+    }
+    const VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::PipelineWait};
+    const WorkerWaitConfig& config = WorkerPipelineWait();
+    const auto begin = std::chrono::steady_clock::now();
+    bool built = true;
+    if (!config.limited) {
+        build->Wait(!worker_only_build);
+    } else {
+        const std::chrono::microseconds left = config.limit - worker_waited;
+        built = left.count() > 0 ? build->WaitFor(left) : build->IsBuilt();
+    }
+    const auto spent = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - begin);
+    worker_waited += spent;
+    worker_drops = !built;
+    if (!built) {
+        scheduler.SetGraphicsPipelineMissing(true);
+    }
+    hold_time_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(spent).count(),
+                           std::memory_order::relaxed);
+    ReportWorkerPipelineWait(key.Hash(), spent, built);
+    return built;
 }
 
 // TODO(crueter): This is the worst-formatted code I have EVER seen
@@ -1289,19 +1387,25 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
         }
     }
 
+    // The worker decides once per draw, in its first wait, whether the draw is dropped
+    // (WorkerWaitBuild); the commands recorded after it only read worker_drops when it waited.
+    const bool pending_build{!IsBuilt()};
     if (mesh_emulation) {
         // The mesh program runs as a compute dispatch outside the render pass and writes the
         // triangles the draw then reads; both use the descriptor set committed here.
         scheduler.RequestOutsideRenderPassOperationContext();
-        if (!IsBuilt()) {
-            scheduler.Record([this](vk::CommandBuffer) { build->Wait(!worker_only_build); });
+        if (pending_build) {
+            scheduler.Record([this](vk::CommandBuffer) { (void)WorkerWaitBuild(); });
         }
         scheduler.Record([this, descriptor_data, groups = mesh_groups, capacity = mesh_capacity,
-                          task_buffers = mesh_task_buffers,
+                          task_buffers = mesh_task_buffers, pending_build,
                           rescaling_data = rescaling.Data(), is_rescaling = texture_cache.IsRescaling(),
                           uses_render_area = render_area.uses_render_area,
                           render_area_data = render_area.words](vk::CommandBuffer cmdbuf) {
             mesh_descriptor_set = VK_NULL_HANDLE;
+            if (pending_build && worker_drops) {
+                return;
+            }
             const bool has_task{mesh_emulation->has_task};
             if (!pipeline || !mesh_compute_pipeline || build->Failed() || groups == 0 ||
                 (has_task && (!task_compute_pipeline || !distribution_pipeline))) {
@@ -1423,16 +1527,13 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
     if (writes_storage) {
         scheduler.NoteRenderPassStores();
     }
-    if (!IsBuilt()) {
-        // Wait for the pipeline to be built
+    if (pending_build) {
+        // Wait for the pipeline to be built (a mesh-emulated draw already waited before its
+        // dispatch, and keeps that decision)
         scheduler.Record([this](vk::CommandBuffer) {
-            const VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::PipelineWait};
-            const auto begin = std::chrono::steady_clock::now();
-            build->Wait(!worker_only_build);
-            hold_time_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                       std::chrono::steady_clock::now() - begin)
-                                       .count(),
-                                   std::memory_order::relaxed);
+            if (!mesh_emulation) {
+                (void)WorkerWaitBuild();
+            }
         });
     }
     const bool is_rescaling{texture_cache.IsRescaling()};
@@ -1463,12 +1564,16 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
     scheduler.Record([this, descriptor_data, bind_pipeline, update_descriptors,
                       descriptor_buffer_offset, descriptor_buffer_chunk, bind_descriptor_buffer,
                       rescaling_data = rescaling.Data(), is_rescaling, update_rescaling,
-                      uses_render_area = render_area.uses_render_area,
+                      pending_build, uses_render_area = render_area.uses_render_area,
                       render_area_data = render_area.words](vk::CommandBuffer cmdbuf) {
         if (bind_descriptor_buffer) {
             const VkDescriptorBufferBindingInfoEXT binding_info{
                 descriptor_buffer_ring.BindingInfo(descriptor_buffer_chunk)};
             cmdbuf.BindDescriptorBuffersEXT(binding_info);
+        }
+        if (pending_build && worker_drops) {
+            // Still building: the wait marked the bound pipeline missing, so the draw is dropped.
+            return;
         }
         if (bind_pipeline) {
             scheduler.SetGraphicsPipelineMissing(!pipeline || build->Failed());
