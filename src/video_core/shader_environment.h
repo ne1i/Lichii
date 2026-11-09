@@ -99,13 +99,6 @@ public:
     /// kind than a cache record holds
     [[nodiscard]] bool CanBeSerialized() const noexcept;
 
-    /// The texture descriptor pool was flushed on the GPU thread before this environment's
-    /// translation moved to another thread, which may not flush: descriptors are read as they
-    /// are in memory. Nothing can make the pool dirty again while the GPU thread waits for it.
-    void SetTexturePoolFlushed() noexcept {
-        texture_pool_flushed = true;
-    }
-
     [[nodiscard]] u64 CalculateHash() const;
 
     void Dump(u64 pipeline_hash, u64 shader_hash) override;
@@ -163,7 +156,6 @@ protected:
 
     bool has_unbound_instructions = false;
     bool has_hle_engine_state = false;
-    bool texture_pool_flushed = false;
 };
 
 class GraphicsEnvironment final : public GenericEnvironment {

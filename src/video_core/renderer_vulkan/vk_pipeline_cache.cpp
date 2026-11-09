@@ -2711,31 +2711,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
     GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
 
     // Shader cache v2: two or more stages translate at once on the shader jobs' CPU workers while
-    // this thread waits. Only this thread may flush guest memory, as reading a texture descriptor
-    // does, so the descriptor pool is flushed here first; with this thread waiting nothing can
-    // make it dirty again. A pool too large to flush on every miss translates here as before.
+    // this thread waits.
     if (std::ranges::count_if(graphics_key.unique_hashes, [](u64 hash) { return hash != 0; }) >=
         2) {
-        constexpr u64 MaxFlushedTexturePoolBytes = u64{1} << 20;
-        const auto& tex_header = maxwell3d->regs.tex_header;
-        const u64 pool_bytes = (u64{tex_header.limit} + 1) * sizeof(Tegra::Texture::TICEntry);
-        if (pool_bytes <= MaxFlushedTexturePoolBytes) {
-            gpu_memory->FlushRegion(tex_header.Address(), pool_bytes);
-            for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
-                if (graphics_key.unique_hashes[index] != 0) {
-                    environments.envs[index].SetTexturePoolFlushed();
-                }
-            }
-            parallel.emplace();
-        } else {
-            static std::atomic<bool> logged{};
-            if (!logged.exchange(true, std::memory_order_relaxed)) {
-                LOG_INFO(Render_Vulkan,
-                         "Texture descriptor pool of {} bytes: pipelines that use it translate "
-                         "on the GPU thread",
-                         pool_bytes);
-            }
-        }
+        parallel.emplace();
     }
 
     // Native programs emit their SPIR-V in the pipeline's job instead of here
