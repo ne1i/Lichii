@@ -255,8 +255,8 @@ private:
         block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
 
         // JIT Compile
-        const Common::Nx2GuestTrace::StallScope trace{Common::Nx2GuestTrace::Stall::JitCompile,
-                                                      Common::Nx2GuestTrace::CoreState::Jit};
+        const ::Common::Nx2GuestTrace::StallScope trace{::Common::Nx2GuestTrace::Stall::JitCompile,
+                                                      ::Common::Nx2GuestTrace::CoreState::Jit};
         const auto get_code = [this](u64 vaddr) { return conf.callbacks->MemoryReadCode(vaddr); };
         // LocationDescriptor ctor() does important ops (like tflags) do not skip
         auto const arch_descriptor = A64::LocationDescriptor{descriptor};
@@ -276,8 +276,8 @@ private:
                 return;
             }
 
-            const Common::Nx2GuestTrace::StallScope trace{
-                Common::Nx2GuestTrace::Stall::JitInvalidate};
+            const ::Common::Nx2GuestTrace::StallScope trace{
+                ::Common::Nx2GuestTrace::Stall::JitInvalidate};
             jit_state.ResetRSB();
             if (invalidate_entire_cache) {
                 block_of_code.ClearCache();

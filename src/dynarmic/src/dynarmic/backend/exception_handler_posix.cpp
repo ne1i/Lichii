@@ -124,8 +124,8 @@ void SigHandler::RegisterHandler() {
 void SigHandler::SigAction(int sig, siginfo_t* info, void* raw_context) {
     DEBUG_ASSERT(sig == SIGSEGV || sig == SIGBUS);
     // The handler's own time: the kernel's signal delivery around it is not seen from here.
-    const Common::Nx2GuestTrace::StallScope trace{Common::Nx2GuestTrace::Stall::Sigsegv,
-                                                  Common::Nx2GuestTrace::CoreState::Fault, true};
+    const ::Common::Nx2GuestTrace::StallScope trace{::Common::Nx2GuestTrace::Stall::Sigsegv,
+                                                  ::Common::Nx2GuestTrace::CoreState::Fault, true};
     CTX_DECLARE(raw_context);
     {
         std::shared_lock guard(sig_handler->code_block_infos_mutex);
