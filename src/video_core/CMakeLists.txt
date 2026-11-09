@@ -27,6 +27,7 @@ add_library(video_core STATIC
     cdma_pusher.cpp
     cdma_pusher.h
     compatible_formats.cpp
+    cold_hint_queue.h
     compatible_formats.h
     control/channel_state.cpp
     control/channel_state.h

@@ -653,12 +653,7 @@ void TextureCache<P>::TickFrame() {
     sentenced_image_view.Tick();
     TickAsyncDecode();
     TickAsyncUnswizzle();
-    if (frame_tick % 600 == 0 && !uploaded_ranges.empty()) {
-        for (const auto& [address, size] : uploaded_ranges) {
-            device_memory.HintCold(address, size);
-        }
-        uploaded_ranges.clear();
-    }
+    uploaded_ranges.Tick(frame_tick, device_memory, "Texture cache");
 
     runtime.TickFrame();
     ++frame_tick;
@@ -2163,10 +2158,10 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         if (True(image.flags & ImageFlagBits::Sparse)) {
             // Non-contiguous: each mapped piece (title 1 maps its own memory into these).
             ForEachSparseSegment(image, [&](GPUVAddr, DAddr address, size_t size) {
-                uploaded_ranges.emplace_back(address, size);
+                uploaded_ranges.Add(address, size);
             });
         } else {
-            uploaded_ranges.emplace_back(image.cpu_addr, image.guest_size_bytes);
+            uploaded_ranges.Add(image.cpu_addr, image.guest_size_bytes);
         }
     }
 }

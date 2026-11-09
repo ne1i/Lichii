@@ -46,6 +46,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_download_trace.h"
+#include "video_core/cold_hint_queue.h"
 #include "video_core/nx2_async_readback.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/rasterizer_download_area.h"
@@ -1071,8 +1072,8 @@ private:
     size_t immediate_buffer_capacity = 0;
     Common::ScratchBuffer<u8> immediate_buffer_alloc;
     std::vector<u8> guest_uint8_indices;
-    /// Guest memory large uploads came from since the last cold hint (device address, size).
-    std::vector<std::pair<DAddr, u64>> uploaded_buffer_ranges;
+    /// Guest memory large uploads came from, marked cold every 600 frames.
+    VideoCommon::ColdHintQueue uploaded_buffer_ranges;
 
     struct LRUItemParams {
         using ObjectType = BufferId;

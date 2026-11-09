@@ -146,12 +146,7 @@ void BufferCache<P>::TickFrame() {
         }
         keep.kept = keep.streamed_binds = keep.verified = keep.mismatches = 0;
     }
-    if (frame_tick % 600 == 0 && !uploaded_buffer_ranges.empty()) {
-        for (const auto& [address, size] : uploaded_buffer_ranges) {
-            device_memory.HintCold(address, size);
-        }
-        uploaded_buffer_ranges.clear();
-    }
+    uploaded_buffer_ranges.Tick(frame_tick, device_memory, "Buffer cache");
     if (static u64 frames{}; ++frames % 600 == 0) {
         u64 total{};
         size_t count{};
@@ -3830,7 +3825,7 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
             // Large uploads are mostly geometry the host GPU now has its own copy of: TickFrame
             // marks their guest memory cold (see TextureCache::RefreshContents).
             if (copy.size >= 256_KiB) {
-                uploaded_buffer_ranges.emplace_back(device_addr, copy.size);
+                uploaded_buffer_ranges.Add(device_addr, copy.size);
             }
             // Apply the staging offset
             copy.src_offset += upload_staging.offset;
