@@ -13,6 +13,7 @@
 #include "core/arm/arm_interface.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/nx2_svc_trace.h"
 #include "core/hle/kernel/svc.h"
 #include "core/oot_zstd_hook.h"
 #include "core/hle/kernel/k_readable_event.h"
@@ -2503,6 +2504,12 @@ static void Call64(Core::System& system, u32 imm, std::span<uint64_t, 8> args) {
 }
 void Call(Core::System& system, u32 imm) {
     if (imm == Core::OotZstd::SvcNumber) {
+        if (Common::Nx2GuestTrace::Enabled()) {
+            const Nx2SvcTrace::Token trace = Nx2SvcTrace::Begin(system, imm, {});
+            Core::OotZstd::Handle(system);
+            Nx2SvcTrace::End(system, imm, trace, 0, 0);
+            return;
+        }
         Core::OotZstd::Handle(system);
         return;
     }
@@ -2510,6 +2517,9 @@ void Call(Core::System& system, u32 imm) {
     auto& process = GetCurrentProcess(kernel);
     std::array<uint64_t, 8> args;
     kernel.CurrentPhysicalCore().SaveSvcArguments(process, args);
+    const Nx2SvcTrace::Token trace = Common::Nx2GuestTrace::Enabled()
+                                         ? Nx2SvcTrace::Begin(system, imm, args)
+                                         : Nx2SvcTrace::Token{};
     GetCurrentThread(kernel).SetEnteredKernel();
     //kernel.EnterSVCProfile();
     LOG_TRACE(Kernel_SVC, "{} [0]={:#x} [1]={:#x} [2]={:#x} [3]={:#x} [4]={:#x} [5]={:#x} [6]={:#x}",
@@ -2585,6 +2595,7 @@ void Call(Core::System& system, u32 imm) {
                  GetArg64(args, 2));
     }
     //kernel.ExitSVCProfile();
+    Nx2SvcTrace::End(system, imm, trace, args[0], args[1]);
     kernel.CurrentPhysicalCore().LoadSvcArguments(process, args);
 }
 
