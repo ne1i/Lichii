@@ -20,6 +20,7 @@
 #include <vector>
 #include <fmt/ranges.h>
 
+#include "common/nx2_guest_trace.h"
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/buffer_cache/multi_range_refresh.h"
@@ -805,7 +806,10 @@ std::optional<u64> BufferCache<P>::FinishReadDownloads(DAddr device_addr, u64 si
         if (!runtime.IsFree(*tick)) {
             lock.unlock();
             const u64 wait_start = VideoCore::AsyncReadback::Now();
+            const u64 trace_start =
+                VideoCore::AsyncReadback::t_reading ? Common::Nx2GuestTrace::Begin() : 0;
             runtime.WaitForHostRead(*tick);
+            Common::Nx2GuestTrace::End(Common::Nx2GuestTrace::Stall::ReadbackFence, trace_start);
             waited = (std::max)(VideoCore::AsyncReadback::Now() - wait_start, u64{1});
             VideoCore::AsyncReadback::CountHostWait(waited);
             lock.lock();
