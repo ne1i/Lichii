@@ -94,6 +94,8 @@ enum class Stall : u8 {
     ServiceLock,    ///< A service's lock, taken for each of its requests
     HleRequest,     ///< HLE service requests (ServiceFrameworkBase::HandleSyncRequest)
     GpuSubmit,      ///< nvhost_gpu::SubmitGPFIFOImpl (the pushbuffer snapshot included)
+    JitWarm,        ///< A block compiled ahead by the JIT warm-up (core idle time)
+    JitUnlisted,    ///< Count only: a block execution compiled that no warm-up list had
     Count,
 };
 
@@ -102,6 +104,7 @@ inline constexpr std::array<std::string_view, StallCount> stall_names{
     "sigsegv",  "jit",            "jit_invalidate",   "mem_write",    "mem_read",
     "cpu_read", "gpu_invalidate", "gpu_flush",        "sched_lock",   "gpu_sync",
     "readback_fence", "download_landing", "service_lock", "hle_request", "gpu_submit",
+    "jit_warm", "jit_new",
 };
 
 /// The calling thread's guest core, NoCore when it is not a core's host thread. Never inlined:

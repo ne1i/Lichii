@@ -60,6 +60,7 @@ public:
     void AddTicks(u64 ticks) override;
     u64 GetTicksRemaining() override;
     u64 GetCNTPCT() override;
+    void BlockCompiled(u64 location) override;
     bool CheckMemoryAccess(u64 addr, u64 size, Kernel::DebugWatchpointType type);
     void ReturnException(u64 pc, Dynarmic::HaltReason hr);
 
@@ -103,6 +104,9 @@ public:
     void ClearInstructionCache() override;
     void InvalidateCacheRange(u64 addr, std::size_t size) override;
 
+    void SetJitWarmup(std::shared_ptr<JitWarmup> warmup) override;
+    bool WarmUp(const std::atomic<bool>& stop) override;
+
 protected:
     const Kernel::DebugWatchpoint* HaltedWatchpoint() const override;
     void RewindBreakpointInstruction() override;
@@ -119,6 +123,7 @@ private:
     std::size_t m_core_index{};
 
     std::optional<Dynarmic::A64::Jit> m_jit{};
+    std::shared_ptr<JitWarmup> m_warmup;
 
     // SVC callback
     u32 m_svc{};

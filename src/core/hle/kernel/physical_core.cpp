@@ -10,6 +10,7 @@
 #include "common/nx2_guest_trace.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
+#include "core/arm/arm_interface.h"
 #include "core/core.h"
 #include "core/debugger/debugger.h"
 #include "core/hle/kernel/k_process.h"
@@ -257,6 +258,28 @@ void PhysicalCore::Idle(KernelCore& kernel) {
             Common::Nx2GuestTrace::LeaveIdle(m_core_index);
         }
     };
+    // JIT warm-up: compile listed code on this core's thread until a thread is ready to run here
+    // (checked between blocks), in place of the spin while there is any. Each call compiles for
+    // one slice (EDEN_NX2_JIT_WARMUP_SLICE_US); EDEN_NX2_JIT_WARMUP_PAUSE_US=<n> idles n us
+    // between slices.
+    static const long long pause_us = [] {
+        const char* text = std::getenv("EDEN_NX2_JIT_WARMUP_PAUSE_US");
+        return text ? std::strtoll(text, nullptr, 10) : 0LL;
+    }();
+    if (!m_is_single_core) {
+        if (KProcess* const process = kernel.ApplicationProcess(); process != nullptr) {
+            if (Core::ArmInterface* const arm = process->GetArmInterface(m_core_index)) {
+                while (!m_is_interrupted.load(std::memory_order_acquire) &&
+                       arm->WarmUp(m_is_interrupted)) {
+                    if (pause_us > 0) {
+                        std::unique_lock lk{m_guard};
+                        m_on_interrupt.wait_for(lk, std::chrono::microseconds{pause_us},
+                                                [this] { return m_is_interrupted.load(); });
+                    }
+                }
+            }
+        }
+    }
     const auto spin = std::chrono::microseconds{spin_us};
     if (spin.count() > 0) {
         const auto deadline = std::chrono::steady_clock::now() + spin;
