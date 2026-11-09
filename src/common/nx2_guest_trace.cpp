@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <fmt/format.h>
@@ -219,7 +220,8 @@ std::string Clean(std::string_view text) {
             break;
         }
         const bool keep = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                          (c >= '0' && c <= '9') || std::string_view{"_.-:()+<>"}.contains(c);
+                          (c >= '0' && c <= '9') ||
+                          std::string_view{"_.-:()+<>"}.find(c) != std::string_view::npos;
         clean += keep ? c : '_';
     }
     return clean.empty() ? std::string{"-"} : clean;
@@ -497,7 +499,8 @@ CoreRegistration::CoreRegistration(size_t core_)
         return;
     }
     CoreData& data = g_cores[core];
-    Switch(data, CoreState::Kernel, Ticks());
+    data.state.store(static_cast<u8>(CoreState::Kernel), Relaxed);
+    data.since.store(Ticks(), Relaxed);
     data.running.store(true, Relaxed);
     std::scoped_lock lock{g_clock_mutex};
     g_clocks[core] = &clock;
@@ -625,8 +628,7 @@ SvcEnd LeaveSvc(u64 thread_id, u32 svc, const SvcStart& start) {
     return end;
 }
 
-void SvcDetail(u64 thread_id, u32 svc, const SvcStart& start, const SvcEnd& end,
-               std::string_view detail) {
+void SvcDetail(u64 thread_id, u32 svc, const SvcEnd& end, std::string_view detail) {
     Slot& slot = SlotOf(thread_id);
     if (end.longest) {
         const u32 epoch = g_epoch.load(Relaxed);
@@ -643,7 +645,6 @@ void SvcDetail(u64 thread_id, u32 svc, const SvcStart& start, const SvcEnd& end,
         PushLong(Sub(end.end, end.host), end.end, "svc:{}#{}:{}({})",
                  Clean(slot.name.Get().data()), thread_id, SvcLabel(svc), Clean(detail));
     }
-    static_cast<void>(start);
 }
 
 std::string_view SvcName(u32 svc) {
@@ -711,7 +712,9 @@ IpcScope::IpcScope(std::string_view service, u32 command_, u64 handler_, u64 cli
     if (start == 0) {
         return;
     }
-    std::memcpy(name.data(), service.data(), (std::min)(service.size(), name.size() - 1));
+    if (!service.empty()) {
+        std::memcpy(name.data(), service.data(), (std::min)(service.size(), name.size() - 1));
+    }
     Slot& client_slot = SlotOf(client);
     client_slot.request.Set(service);
     client_slot.request_command.store(command, Relaxed);
@@ -922,7 +925,7 @@ void OnFrame(const Frame& frame) {
         thread_text += fmt::format(
             "{}{}/c{}/run:{:.1f}/svc:{:.1f}/blocked:{:.1f}/preempt:{:.1f}/svcs:{}/submits:{}",
             thread_text.empty() ? "" : ",", ThreadLabel(thread.frame.tag - 1),
-            slot.core.load(Relaxed), to_ms(thread.frame.run), to_ms(thread.frame.svc),
+            u32{slot.core.load(Relaxed)}, to_ms(thread.frame.run), to_ms(thread.frame.svc),
             to_ms(Sub(thread.frame.off, thread.frame.preempt)), to_ms(thread.frame.preempt),
             thread.frame.svcs, thread.frame.submits);
         if (wait.ms > 0.0) {

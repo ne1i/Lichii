@@ -21,6 +21,7 @@
 #endif
 
 #include "common/logging.h"
+#include "common/nx2_guest_trace.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/nx2_stutter_trace.h"
 
@@ -106,6 +107,7 @@ struct FrameState {
     std::array<u64, SiteCount> window_site_counts{};
     u64 last_ns{};
     u64 last_ticks{};
+    u64 last_mono_ns{};
     ThreadTicks ticks{};
     ThreadTicks counts{};
     u64 window_start_ns{};
@@ -172,6 +174,9 @@ void Summarize(FrameState& state, u64 now) {
              state.window_over_33, state.window_over_100, histogram.empty() ? "none" : histogram,
              categories, state.window_graphics_builds, state.window_compute_builds, lookups,
              driver_builds, CacheFileBytes(), sites.empty() ? "none" : sites);
+    if (Common::Nx2GuestTrace::Enabled()) {
+        Common::Nx2GuestTrace::Summarize(static_cast<double>(now - state.window_start_ns) / 1e9);
+    }
     state.window_start_ns = now;
     state.window_frames = 0;
     state.window_over_33 = 0;
@@ -328,6 +333,12 @@ void OnPresent() {
     auto& state = g_frame;
     const u64 now = Nx2Profile::Now();
     const u64 now_ticks = Nx2Profile::Ticks();
+    // Now is not the clock other tools stamp with: the lines give this one.
+    const u64 now_mono_ns = static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    const u64 frame_start_mono_ns = std::exchange(state.last_mono_ns, now_mono_ns);
     const ThreadTicks ticks = Snapshot(now_ticks);
     ThreadTicks counts;
     for (size_t thread = 0; thread < ThreadCount; ++thread) {
@@ -430,9 +441,22 @@ void OnPresent() {
             }
         }
         LOG_INFO(HW_GPU, "Nx2Stutter frame={} ms={:.1f} cause={}{} other={:.1f} busy={} "
-                         "builds=gfx:{},compute:{}",
+                         "builds=gfx:{},compute:{} mono={}-{}",
                  state.frames, interval_ms, frame.cause, fields, frame.other_ms,
-                 busy.empty() ? "none" : busy, graphics_builds, compute_builds);
+                 busy.empty() ? "none" : busy, graphics_builds, compute_builds,
+                 frame_start_mono_ns, now_mono_ns);
+    }
+    if (Common::Nx2GuestTrace::Enabled()) {
+        Common::Nx2GuestTrace::OnFrame({
+            .number = state.frames,
+            .start_ticks = frame_start_ticks,
+            .end_ticks = now_ticks,
+            .start_mono_ns = frame_start_mono_ns,
+            .end_mono_ns = now_mono_ns,
+            .ms_per_tick = ms_per_tick,
+            .interval_ms = interval_ms,
+            .slow = interval_ms > StutterMs,
+        });
     }
     if (interval_ms > state.detail_ms) {
         std::string longest;
@@ -502,6 +526,7 @@ void StartSession() {
         g_long_sites.clear();
     }
     SetCacheFile({});
+    Common::Nx2GuestTrace::StartSession();
 }
 
 } // namespace VideoCommon::StutterTrace

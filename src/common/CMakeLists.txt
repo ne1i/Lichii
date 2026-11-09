@@ -47,6 +47,8 @@ add_library(
     div_ceil.h
     dkb_cpu_trace.cpp
     dkb_cpu_trace.h
+    nx2_guest_trace.cpp
+    nx2_guest_trace.h
     nx2_sampler.cpp
     nx2_sampler.h
     dynamic_library.cpp

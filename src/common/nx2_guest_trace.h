@@ -7,7 +7,6 @@
 #include <atomic>
 #include <cstdlib>
 #include <string_view>
-#include <chrono>
 #ifdef _MSC_VER
 #include <intrin.h>
 #elif defined(__x86_64__)
@@ -15,6 +14,7 @@
 #endif
 
 #include "common/common_types.h"
+#include "common/cpu_features.h"
 #include "common/thread_cpu_clock.h"
 
 // The guest side of EDEN_NX2_STUTTER_TRACE=1 (video_core/nx2_stutter_trace.h): what the host
@@ -45,15 +45,13 @@ inline void ReadSwitch() {
     return g_enabled;
 }
 
-/// What everything here measures in (Nx2Profile::Ticks: the time stamp counter on x86-64). From
-/// the compiler's own macros: every library that includes this must agree on it.
+/// What everything here measures in, the same as Nx2Profile::Ticks: the time stamp counter on
+/// x86-64. From the compiler's own macros: every library that includes this must agree on it.
 [[nodiscard]] inline u64 Ticks() {
 #if defined(__x86_64__) || defined(_M_X64)
     return __rdtsc();
 #else
-    return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                std::chrono::steady_clock::now().time_since_epoch())
-                                .count());
+    return static_cast<u64>(g_wall_clock.GetTimeNS().count());
 #endif
 }
 
@@ -156,8 +154,7 @@ struct SvcEnd {
 [[nodiscard]] SvcStart EnterSvc(u64 thread_id, u32 svc);
 [[nodiscard]] SvcEnd LeaveSvc(u64 thread_id, u32 svc, const SvcStart& start);
 /// What the SVC waited on, for the SVCs LeaveSvc asked a detail of.
-void SvcDetail(u64 thread_id, u32 svc, const SvcStart& start, const SvcEnd& end,
-               std::string_view detail);
+void SvcDetail(u64 thread_id, u32 svc, const SvcEnd& end, std::string_view detail);
 
 /// The SVC's name if it is one that waits or is otherwise worth a name, empty otherwise.
 [[nodiscard]] std::string_view SvcName(u32 svc);
