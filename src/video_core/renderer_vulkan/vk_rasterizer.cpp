@@ -76,6 +76,7 @@
 #include "video_core/nx2_debug_control.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_stutter_trace.h"
 
 namespace Vulkan {
 
@@ -2329,6 +2330,8 @@ void RasterizerVulkan::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType 
     if (addr == 0 || size == 0) {
         return;
     }
+    const VideoCommon::StutterTrace::SiteScope flush_scope{
+        VideoCommon::StutterTrace::Site::RasterizerFlushRegion};
     if (True(which & (VideoCommon::CacheType::TextureCache | VideoCommon::CacheType::BufferCache))) {
         // CPU writes into GPU-written memory are only collected when they happen. Apply them
         // first, or the download writes the stale GPU copy over them: the Yoshi demo writes a
@@ -2642,6 +2645,8 @@ void RasterizerVulkan::FlushAndInvalidateRegion(DAddr addr, u64 size,
 }
 
 void RasterizerVulkan::WaitForIdle() {
+    const VideoCommon::StutterTrace::SiteScope idle_scope{
+        VideoCommon::StutterTrace::Site::WaitForIdle};
     // Everything but wait pixel operations. This intentionally includes FRAGMENT_SHADER_BIT because
     // fragment shaders can still write storage buffers.
     VkPipelineStageFlags flags =

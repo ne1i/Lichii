@@ -96,6 +96,10 @@ enum class Site : u8 {
     TextureDownload, ///< Image data downloaded while the caller waits for the host GPU
     SchedulerFinish, ///< Submitting and waiting for the host GPU to finish all of it
     MemoryFree,      ///< Device memory blocks given back to the driver
+    MacroDmaFlush,   ///< A macro's DMA read writing out GPU-written memory before reading it
+    GpuInvalidate,   ///< Gathering the CPU's writes and invalidating the caches for them
+    WaitForIdle,     ///< The rasterizer's wait for idle
+    RasterizerFlushRegion, ///< RasterizerVulkan::FlushRegion, the downloads it makes included
     Count,
 };
 
@@ -104,6 +108,7 @@ inline constexpr std::array<std::string_view, SiteCount> site_names{
     "memory_allocate", "staging_create", "buffer_create",    "buffer_delete",
     "buffer_collect",  "buffer_download", "image_create",    "image_delete",
     "texture_collect", "texture_download", "scheduler_finish", "memory_free",
+    "macro_dma_flush", "gpu_invalidate",  "wait_for_idle",    "flush_region",
 };
 
 [[nodiscard]] inline bool ReadEnv() {

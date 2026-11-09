@@ -42,6 +42,7 @@
 #include "video_core/nx2_async_readback.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_stutter_trace.h"
 
 namespace Tegra {
 
@@ -1457,14 +1458,22 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                     const bool back_call =
                         split_writes != nullptr && VideoCommon::Nx2Profile::Enabled();
                     const u64 write_out_start = back_call ? VideoCore::AsyncReadback::Now() : 0;
-                    if (owns_caches) {
-                        VideoCommon::QueryDma::FlushPending(memory, maxwell3d.Rasterizer(), source,
-                                                            read_bytes);
+                    bool dirty{};
+                    {
+                        const VideoCommon::StutterTrace::SiteScope flush_scope{
+                            VideoCommon::StutterTrace::Site::MacroDmaFlush};
+                        if (owns_caches) {
+                            VideoCommon::QueryDma::FlushPending(memory, maxwell3d.Rasterizer(),
+                                                                source, read_bytes);
+                        }
+                        dirty = memory.IsMemoryDirty(source, read_bytes,
+                                                     VideoCommon::CacheType::BufferCache);
+                        if (dirty) {
+                            memory.FlushRegion(source, read_bytes,
+                                               VideoCommon::CacheType::BufferCache);
+                        }
                     }
-                    const bool dirty =
-                        memory.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache);
                     if (dirty) {
-                        memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
                         static u64 flushes{};
                         if (++flushes % 2000 == 1) {
                             LOG_INFO(HW_GPU, "Native MME DMA read flushed GPU-written memory ({} times)", flushes);
