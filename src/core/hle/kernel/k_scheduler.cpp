@@ -10,6 +10,7 @@
 #include "common/bit_util.h"
 #include "common/fiber.h"
 #include "common/logging.h"
+#include "common/nx2_guest_trace.h"
 #include "core/arm/arm_interface.h"
 #include "core/core.h"
 #include "core/core_timing.h"
@@ -410,7 +411,16 @@ void KScheduler::ScheduleImpl(KernelCore& kernel) {
     m_switch_cur_thread = cur_thread;
     m_switch_highest_priority_thread = highest_priority_thread;
     m_switch_from_schedule = true;
-    Common::Fiber::YieldTo(cur_thread->m_host_context, *m_switch_fiber);
+    if (Common::Nx2GuestTrace::Enabled()) {
+        // On a stack of the fiber: it resumes on whichever core's host thread runs it next.
+        const u64 thread_id = cur_thread->GetThreadId();
+        const u64 off_core = Common::Nx2GuestTrace::OffCore(
+            thread_id, cur_thread->GetRawState() == ThreadState::Runnable);
+        Common::Fiber::YieldTo(cur_thread->m_host_context, *m_switch_fiber);
+        Common::Nx2GuestTrace::OnCore(thread_id, off_core);
+    } else {
+        Common::Fiber::YieldTo(cur_thread->m_host_context, *m_switch_fiber);
+    }
 
     // Returning from ScheduleImpl occurs after this thread has been scheduled again.
 }

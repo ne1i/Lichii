@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <thread>
+#include "common/nx2_guest_trace.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -101,6 +102,11 @@ void PhysicalCore::RunThread(KernelCore& kernel, Kernel::KThread* thread) {
                 if (True(hr & Core::HaltReason::StepThread)) {
                     thread->SetStepState(StepState::StepPerformed);
                 }
+            } else if (Common::Nx2GuestTrace::Enabled() && !m_is_single_core) {
+                const u64 thread_id = thread->GetThreadId();
+                Common::Nx2GuestTrace::EnterGuest(m_core_index, thread_id);
+                hr = interface->RunThread(thread);
+                Common::Nx2GuestTrace::LeaveGuest(m_core_index, thread_id);
             } else {
                 hr = interface->RunThread(thread);
             }
@@ -242,6 +248,15 @@ void PhysicalCore::Idle(KernelCore& kernel) {
         spin_us = process != nullptr && process->IsSwitch2() ? 100 : 0;
 #endif
     }
+    const bool traced = Common::Nx2GuestTrace::Enabled() && !m_is_single_core;
+    if (traced) {
+        Common::Nx2GuestTrace::EnterIdle(m_core_index);
+    }
+    SCOPE_EXIT {
+        if (traced) {
+            Common::Nx2GuestTrace::LeaveIdle(m_core_index);
+        }
+    };
     const auto spin = std::chrono::microseconds{spin_us};
     if (spin.count() > 0) {
         const auto deadline = std::chrono::steady_clock::now() + spin;

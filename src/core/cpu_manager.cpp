@@ -6,6 +6,7 @@
 
 #include "common/dkb_cpu_trace.h"
 #include "common/fiber.h"
+#include "common/nx2_guest_trace.h"
 #include "common/scope_exit.h"
 #include "common/thread.h"
 #include "common/settings.h"
@@ -174,6 +175,8 @@ void CpuManager::RunThread(std::stop_token token, std::size_t core) {
     const Common::DkbCpuTrace::Registration cpu_trace{
         is_multicore ? static_cast<Common::DkbCpuTrace::Role>(core)
                      : Common::DkbCpuTrace::Role::GuestSingleCore};
+    const Common::Nx2GuestTrace::CoreRegistration guest_trace{
+        is_multicore ? core : Common::Nx2GuestTrace::NoCore};
     /// Initialization
     system.RegisterCoreThread(core);
     std::string name = is_multicore ? ("CPUCore_" + std::to_string(core)) : std::string{"CPUThread"};
