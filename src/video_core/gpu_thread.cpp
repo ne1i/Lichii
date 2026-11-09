@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <cstdlib>
+#include <optional>
 #include <thread>
 
 #ifdef __linux__
@@ -55,6 +57,15 @@ ThreadManager::~ThreadManager() = default;
 void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Frontend::GraphicsContext& context, Tegra::Control::Scheduler& scheduler) {
     rasterizer = renderer.ReadRasterizer();
     thread = std::jthread([&](std::stop_token stop_token) {
+        // EDEN_NX2_PENDING_POLL_US=<n>: override the pending-channel poll. 0 only yields, n > 0
+        // sleeps n us between polls (up to 2 s of waiting). Unset: the defaults below.
+        static const std::optional<unsigned long> pending_poll_us = []() -> std::optional<unsigned long> {
+            const char* const value = std::getenv("EDEN_NX2_PENDING_POLL_US");
+            if (value == nullptr) {
+                return std::nullopt;
+            }
+            return std::strtoul(value, nullptr, 10);
+        }();
         const Common::DkbCpuTrace::Registration cpu_trace{Common::DkbCpuTrace::Role::GpuCommand};
         const VideoCommon::StutterTrace::ThreadScope stutter_thread{
             VideoCommon::StutterTrace::Thread::Front};
@@ -105,8 +116,12 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     Profile::Scope scope{Profile::Zone::PendingSleep};
                     split.SettleIdleBack();
                     const auto waited = std::chrono::steady_clock::now() - last_progress;
-                    if (waited < std::chrono::microseconds{500}) {
+                    if (pending_poll_us.has_value() && *pending_poll_us == 0) {
                         std::this_thread::yield();
+                    } else if (waited < std::chrono::microseconds{500}) {
+                        std::this_thread::yield();
+                    } else if (pending_poll_us.has_value() && waited < std::chrono::seconds{2}) {
+                        std::this_thread::sleep_for(std::chrono::microseconds{*pending_poll_us});
                     } else if (waited < std::chrono::seconds{2}) {
 #ifdef _WIN32
                         // sleep_for(50us) rounds up to Sleep(1) (>= 1 ms) on Windows;
