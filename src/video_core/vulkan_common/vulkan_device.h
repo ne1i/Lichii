@@ -1235,11 +1235,9 @@ FN_MAX_LIMIT_LIST
     /// NVIDIA's and AMD's drivers keep a disk cache of built pipelines of their own, so the
     /// emulator keeps none on top: a VkPipelineCache only kept every pipeline the title ever built
     /// in host memory (title 1: a 245 MB file, ~0.35 GB of RAM for the session) and copied it whole
-    /// at each save, which stalled frames, and pipelines built no slower without it.
-    bool DriverCachesPipelines() const noexcept {
-        return properties.driver.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY ||
-               properties.driver.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
-    }
+    /// at each save, which stalled frames, and pipelines built no slower without it. RADV keeps
+    /// one too through Mesa's shader cache, unless it is disabled.
+    bool DriverCachesPipelines() const noexcept;
 
     bool IsMoltenVK() const noexcept {
         return properties.driver.driverID == VK_DRIVER_ID_MOLTENVK;
