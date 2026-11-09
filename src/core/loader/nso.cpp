@@ -27,6 +27,7 @@
 #include "core/hle/kernel/k_thread.h"
 #include "core/loader/nso.h"
 #include "core/memory.h"
+#include "core/oot_zstd_hook.h"
 
 #ifdef HAS_NCE
 #include "core/arm/nce/patcher.h"
@@ -339,6 +340,8 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
                      matching_sdk, matching_sdk ? load_base : 0, session ? session->id : 0);
         }
     }
+    Core::OotZstd::PatchModule(process.GetProgramId(), nso_header.build_id, name, codeset.memory,
+                               load_base);
     LOG_INFO(Loader, "Module {} loaded at {:#x} (size {:#x})", nso_file.GetName(), load_base, image_size);
     process.LoadModule(system.Kernel(), std::move(codeset), load_base);
     if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
