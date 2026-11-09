@@ -16,7 +16,7 @@
 #include "common/fs/fs.h"
 #include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
-#include "common/logging/log.h"
+#include "common/logging.h"
 #include "common/nx2_guest_trace.h"
 #include "common/thread.h"
 #include "core/arm/dynarmic/jit_warmup.h"

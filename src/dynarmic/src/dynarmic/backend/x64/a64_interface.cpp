@@ -266,6 +266,7 @@ private:
         return entrypoint;
     }
 
+public:
     PrecompileResult Precompile(std::uint64_t location, std::size_t keep_free) {
         ASSERT(!is_executing);
         const IR::LocationDescriptor descriptor{location};
@@ -286,6 +287,7 @@ private:
     size_t CodeCacheUsed() const {
         return size_t(reinterpret_cast<const char*>(block_of_code.getCurr()) - reinterpret_cast<const char*>(block_of_code.GetCodeBegin()));
     }
+private:
 
     /// Translates, optimizes and emits the block. With skip_unreadable, returns nullptr and emits
     /// nothing when an instruction of the block could not be read.
