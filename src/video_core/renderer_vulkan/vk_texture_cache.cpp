@@ -2839,6 +2839,14 @@ u64 TextureCacheRuntime::GetDeviceMemoryUsage() const {
     return device.GetDeviceMemoryUsage();
 }
 
+u64 TextureCacheRuntime::GetRecycledImageMemory() const {
+    return vk::ImageRecycler::KeptBytes();
+}
+
+void TextureCacheRuntime::ShrinkRecycledImages(u64 bytes) {
+    vk::ImageRecycler::Shrink(bytes);
+}
+
 u64 TextureCacheRuntime::CurrentTick() const noexcept {
     return scheduler.CurrentTick();
 }

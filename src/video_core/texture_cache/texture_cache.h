@@ -500,6 +500,16 @@ void TextureCache<P>::TickFrame() {
             total_used_memory -= (std::min)(total_used_memory, bytes);
         }
         total_used_memory -= (std::min)(total_used_memory, gpu_sentenced_bytes);
+        // Images the Vulkan recycler keeps are free memory to the collector: counted, a larger
+        // pool pushed it into high priority (more deletes and write-backs). With them past the
+        // critical memory, the pool gives back half of what it keeps each frame.
+        if constexpr (requires { runtime.GetRecycledImageMemory(); }) {
+            const u64 kept = runtime.GetRecycledImageMemory();
+            total_used_memory -= (std::min)(total_used_memory, kept);
+            if (kept != 0 && total_used_memory + kept >= critical_memory) {
+                runtime.ShrinkRecycledImages(kept / 2);
+            }
+        }
     }
     // EDEN_NX2_MEM_TRACE=1: every 2 s, what the cache holds next to what the process and the
     // driver report (memory climbs).

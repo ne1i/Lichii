@@ -710,7 +710,8 @@ public:
 
     Image(Image&& rhs) noexcept
         : handle{std::exchange(rhs.handle, VkImage{})}, usage{rhs.usage}, owner{rhs.owner},
-          allocator{rhs.allocator}, allocation{rhs.allocation}, dld{rhs.dld} {}
+          allocator{rhs.allocator}, allocation{rhs.allocation}, dld{rhs.dld},
+          recycle_key{rhs.recycle_key} {}
 
     Image& operator=(Image&& rhs) noexcept {
         Release();
@@ -720,7 +721,14 @@ public:
         allocator = rhs.allocator;
         allocation = rhs.allocation;
         dld = rhs.dld;
+        recycle_key = rhs.recycle_key;
         return *this;
+    }
+
+    /// Released into ImageRecycler (for an image of the same create info) instead of
+    /// destroyed; 0 for images that are not recycled.
+    void SetRecycleKey(u64 key) noexcept {
+        recycle_key = key;
     }
 
     ~Image() noexcept {
@@ -764,6 +772,32 @@ private:
     VmaAllocator allocator = nullptr;
     VmaAllocation allocation = nullptr;
     const DeviceDispatch* dld = nullptr;
+    u64 recycle_key = 0;
+};
+
+/// Images on device-local memory, kept after release so an image of the same create info takes
+/// one instead of allocating: Ocarina of Time makes and drops ~8 render targets a frame (its
+/// per-frame allocator moves them, its shadow map changes size), and making, binding and freeing
+/// each took ~0.2 ms of the GPU thread. Up to 512 MiB, for 10 seconds.
+class ImageRecycler {
+public:
+    /// Key of a create info and its allocation request, or 0 when it cannot be recycled (an
+    /// unknown pNext structure).
+    [[nodiscard]] static u64 KeyOf(const VkImageCreateInfo& ci, bool dedicated) noexcept;
+    /// Keeps the image for a later Take; false when it is not kept (the caller destroys it).
+    static bool Put(u64 key, VmaAllocator allocator, VkImage handle,
+                    VmaAllocation allocation) noexcept;
+    /// An image kept under this key, if any.
+    static bool Take(u64 key, VmaAllocator allocator, VkImage& handle,
+                     VmaAllocation& allocation) noexcept;
+    /// Destroys every kept image of this allocator and keeps nothing more (allocator teardown).
+    static void Clear(VmaAllocator allocator) noexcept;
+    /// Keeps images of a new allocator again, though it has the address of a cleared one.
+    static void Open(VmaAllocator allocator) noexcept;
+    /// Device memory the kept images hold (free memory to the texture cache's collector).
+    [[nodiscard]] static u64 KeptBytes() noexcept;
+    /// Drops the oldest kept images until at most `bytes` are kept.
+    static void Shrink(u64 bytes) noexcept;
 };
 
 struct MemoryLocation {

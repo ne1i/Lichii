@@ -101,6 +101,11 @@ public:
 
     u64 GetDeviceMemoryUsage() const;
 
+    /// Device memory the image recycler keeps (vk::ImageRecycler): the collector counts it as
+    /// free, and when memory runs short the recycler gives it back first.
+    u64 GetRecycledImageMemory() const;
+    void ShrinkRecycledImages(u64 bytes);
+
     /// GPU progress: the texture cache frees a deleted image once the GPU is past its last use.
     [[nodiscard]] u64 CurrentTick() const noexcept;
 
@@ -219,6 +224,45 @@ public:
         bool up_to_date = false;
     };
 
+    /// Temporary decode images, reusable once the GPU is past `tick`.
+    struct PendingTranscode {
+        u64 tick;
+        vk::Image image;
+        std::vector<vk::ImageView> views;
+        u32 width;
+        u32 height;
+        u32 levels;
+        u32 layers;
+        u32 unused_frames;
+    };
+    struct MsaaScratchKey {
+        VkFormat format;
+        VkImageType type;
+        u32 width;
+        u32 height;
+        u32 depth;
+        u32 levels;
+        u32 layers;
+        VkImageUsageFlags usage;
+        VkImageCreateFlags flags;
+
+        bool operator==(const MsaaScratchKey&) const noexcept = default;
+    };
+
+    struct MsaaScratchImage {
+        MsaaScratchKey key;
+        vk::Image image;
+        u64 tick;
+        u32 unused_frames;
+    };
+
+    struct PendingByteAddressedShadow {
+        u64 tick;
+        vk::Image image;
+        vk::ImageView view;
+        vk::Buffer bridge;
+    };
+
     [[nodiscard]] VkImageView GetOrCreateResolveShadow(VkImage msaa_image, VkFormat format,
                                                        VkExtent2D extent, u32 layers,
                                                        VkImageAspectFlags aspect_mask);
@@ -293,18 +337,6 @@ public:
     /// astc_recompression=Bc1/Bc3): decode into a temporary RGBA8 image, encode, copy.
     void TranscodeAstcToBcn(Image& image, const StagingBufferRef& map,
                             std::span<const VideoCommon::SwizzleParameters> swizzles);
-
-    /// Temporary decode images, reusable once the GPU is past `tick`.
-    struct PendingTranscode {
-        u64 tick;
-        vk::Image image;
-        std::vector<vk::ImageView> views;
-        u32 width;
-        u32 height;
-        u32 levels;
-        u32 layers;
-        u32 unused_frames;
-    };
     std::deque<PendingTranscode> pending_transcodes;
     /// Decode images the GPU is done with, for the next texture of the same shape.
     std::vector<PendingTranscode> free_transcodes;
@@ -315,37 +347,10 @@ public:
 
     static constexpr size_t indexing_slots = 8 * sizeof(size_t);
     std::array<vk::Buffer, indexing_slots> buffers{};
-    struct MsaaScratchKey {
-        VkFormat format;
-        VkImageType type;
-        u32 width;
-        u32 height;
-        u32 depth;
-        u32 levels;
-        u32 layers;
-        VkImageUsageFlags usage;
-        VkImageCreateFlags flags;
-
-        bool operator==(const MsaaScratchKey&) const noexcept = default;
-    };
-
-    struct MsaaScratchImage {
-        MsaaScratchKey key;
-        vk::Image image;
-        u64 tick;
-        u32 unused_frames;
-    };
 
     std::vector<MsaaScratchImage> msaa_scratch_images;
     ::Common::unordered_map<VkImage, ResolveShadow> resolve_shadows;
     std::vector<std::pair<u64, ResolveShadow>> pending_resolve_shadows;
-
-    struct PendingByteAddressedShadow {
-        u64 tick;
-        vk::Image image;
-        vk::ImageView view;
-        vk::Buffer bridge;
-    };
     std::deque<PendingByteAddressedShadow> pending_byte_addressed_shadows;
 };
 
