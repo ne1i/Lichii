@@ -65,7 +65,7 @@ public:
                     std::unique_ptr<Pipeline> pipeline = translate();
                     translate = {};
                     {
-                        std::scoped_lock lock{mutex};
+                        std::scoped_lock capture_lock{mutex};
                         captured_bytes -= capture_bytes;
                     }
                     if (!pipeline) {
