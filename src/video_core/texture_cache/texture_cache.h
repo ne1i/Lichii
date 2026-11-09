@@ -146,16 +146,16 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
     bool evict_old_costly = false;
     u64 ticks_to_destroy = 0;
     size_t num_iterations = 0;
+    // EDEN_NX2_TC_MIN_AGE=<frames>: never evict images used more recently (thrash tests).
+    static const u64 min_age = [] {
+        const char* value = std::getenv("EDEN_NX2_TC_MIN_AGE");
+        return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
+    }();
     const auto Configure = [&](bool allow_aggressive) {
         high_priority_mode = out_of_memory || total_used_memory >= expected_memory;
         aggressive_mode =
             allow_aggressive && (out_of_memory || total_used_memory >= critical_memory);
         ticks_to_destroy = aggressive_mode ? 10ULL : high_priority_mode ? 25ULL : 50ULL;
-        // EDEN_NX2_TC_MIN_AGE=<frames>: never evict images used more recently (thrash tests).
-        static const u64 min_age = [] {
-            const char* value = std::getenv("EDEN_NX2_TC_MIN_AGE");
-            return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
-        }();
         ticks_to_destroy = (std::max)(ticks_to_destroy, min_age);
         num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);
     };
@@ -254,6 +254,40 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
             lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
         }
     };
+    // A bad overlap that a newer GPU-written image covers holds nothing a later read can want:
+    // delete it after 4 unused frames, without a readback. Ocarina of Time's guard house leaves
+    // ~45 a frame (a shadow map sized by the camera moves every target behind it), far more than
+    // the age-based pass below frees.
+    if (const u64 bad_overlap_age = (std::max)(u64{4}, min_age); frame_tick > bad_overlap_age) {
+        size_t visits = 512;
+        lru_cache.ForEachItemBelow(frame_tick - bad_overlap_age, [&](ImageId image_id) {
+            if (visits-- == 0) {
+                return true;
+            }
+            auto& image = slot_images[image_id];
+            if (False(image.flags & ImageFlagBits::BadOverlap) ||
+                True(image.flags & ImageFlagBits::IsDecoding)) {
+                return false;
+            }
+            const bool superseded = std::ranges::any_of(
+                image.overlapping_images, [&](ImageId overlap_id) {
+                    const auto& overlap = slot_images[overlap_id];
+                    return True(overlap.flags & ImageFlagBits::GpuModified) &&
+                           overlap.modification_tick > image.modification_tick;
+                });
+            if (!superseded) {
+                return false;
+            }
+            MarkStale(image); // before UntrackImage (see MarkStale)
+            if (True(image.flags & ImageFlagBits::Tracked)) {
+                UntrackImage(image, image_id);
+            }
+            ++gc_deletes;
+            UnregisterImage(image_id);
+            DeleteImage(image_id, image.scale_tick > frame_tick + 5);
+            return false;
+        });
+    }
     Configure(false);
     static const u64 old_age = [] {
         const char* value = std::getenv("EDEN_NX2_TC_OLD_AGE");

@@ -71,6 +71,18 @@ constexpr std::array MAX_RESOLUTION_RECORDS{
     BuiltinPatchRecord{0x805BD0, MAX_RESOLUTION_BRANCH, MAX_RESOLUTION_ORIGINAL},
 };
 
+// RsMan-Dev's texture pool patch: stp x8, x9, [sp, #0x10] stores the graphics allocator's
+// initial pool size (x8); the call doubles it first (lsl x8, x8, #1 ; stp ; ret).
+constexpr std::array<u8, 4> TEXTURE_POOL_ORIGINAL{0xE8, 0x27, 0x01, 0xA9};
+constexpr std::array<u8, 4> TEXTURE_POOL_CALL{0xD5, 0x6F, 0xC0, 0x94};
+constexpr std::array<u8, 12> TEXTURE_POOL_ROUTINE{
+    0x08, 0xF9, 0x7F, 0xD3, 0xE8, 0x27, 0x01, 0xA9, 0xC0, 0x03, 0x5F, 0xD6,
+};
+constexpr std::array TEXTURE_POOL_RECORDS{
+    BuiltinPatchRecord{0xC2A36C, TEXTURE_POOL_CALL, TEXTURE_POOL_ORIGINAL},
+    BuiltinPatchRecord{0x3C462C0, TEXTURE_POOL_ROUTINE, {}, true},
+};
+
 constexpr std::array<u8, 4> DYNAMIC_FPS_ORIGINAL{0x28, 0x18, 0x20, 0x1E};
 constexpr std::array<u8, 4> DYNAMIC_FPS_CALL{0x4F, 0x7D, 0xD5, 0x94};
 // Dark's routine up to the step computation; the two built-ins differ only in the tail.
@@ -113,6 +125,15 @@ constexpr std::array BUILTIN_PATCHES{
         .module = "main",
         .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
         .records = MAX_RESOLUTION_RECORDS,
+    },
+    // With Max Resolution the guard house outgrows the initial pool and dereferences a null
+    // allocation.
+    BuiltinPatch{
+        .name = "Texture Pool x2 (built-in)",
+        .title_id = 0x0400486024DEC000,
+        .module = "main",
+        .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+        .records = TEXTURE_POOL_RECORDS,
     },
     // Dark's routine with a tail that also lowers the step above 60 fps, so the game keeps real
     // speed at any frame rate limit (Settings frame_rate_limit).
