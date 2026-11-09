@@ -463,6 +463,19 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         config.fastmem_pointer = std::nullopt;
         config.fastmem_exclusive_access = false;
     }
+    // The IR verification pass only asserts, and builds a hash map per compiled block.
+    // EDEN_NX2_JIT_FAST_COMPILE=0 keeps it.
+    static const bool fast_compile = [] {
+        const char* value = std::getenv("EDEN_NX2_JIT_FAST_COMPILE");
+        const bool enabled = value == nullptr || value[0] != '0';
+        LOG_INFO(Core_ARM, "EDEN_NX2_JIT_FAST_COMPILE: IR verification {}",
+                 enabled ? "skipped" : "kept");
+        return enabled;
+    }();
+    if (fast_compile && Settings::values.cpu_accuracy.GetValue() != Settings::CpuAccuracy::Debugging &&
+        Settings::values.cpu_accuracy.GetValue() != Settings::CpuAccuracy::Paranoid) {
+        config.optimizations |= Dynarmic::OptimizationFlag::DisableVerification;
+    }
     m_jit.emplace(config);
 }
 
