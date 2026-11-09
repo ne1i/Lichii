@@ -23,6 +23,7 @@ the old way there.
 | Fragment subgroup shuffles | AMD's proprietary driver gets them wrong | Broadcast fallback on that driver | [#273] |
 | Depth-compare samples | Undefined on colour or integer images; AMD returned green | Depth-compare images stay floating point. Binding the null image for depth-compare samples of uncomparable images is proposed in the open PR | [#273]; [#354] (open) |
 | Native FP16 arithmetic | Turned off on AMD as a driver workaround | Turned off, with no override yet. An `EDEN_AMD_FP16=1` switch to keep it for testing is proposed in the open PR | [#378] (open) |
+| ASTC is decoded by the GPU at any size | ASTC re-compressed to BC1/BC3: AMD's driver zeroes the partial edge block of small levels, whether written by copy or through a block-texel view. On an RX 6800 XT (driver 32.0.21045.5002) Ocarina's 1365x1365x90 ASTC 8x8 terrain arrays lost their last block column and row from level 4 (85x85) on (read back after `vkCmdCopyBufferToImage`: the encoder wrote the partial block, the image held zeros), and Hyrule Field's ground drew a black grid | ASTC with uneven block mips stays the GPU decoder's RGBA8 on AMD | [#679] |
 
 Not specific to AMD, but easy to mistake for an AMD bug:
 
@@ -92,3 +93,4 @@ Check these before filing a new one.
 [#403]: https://github.com/zortos293/Lichii/issues/403
 [#425]: https://github.com/zortos293/Lichii/pull/425
 [#432]: https://github.com/zortos293/Lichii/pull/432
+[#679]: https://github.com/zortos293/Lichii/pull/679
