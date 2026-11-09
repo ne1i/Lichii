@@ -145,13 +145,13 @@ void BufferCache<P>::TickFrame() {
                      keep.kept, keep.streamed_binds, keep.verified, keep.mismatches);
         }
         keep.kept = keep.streamed_binds = keep.verified = keep.mismatches = 0;
-    }
-    if (frame_tick % 600 == 0 && !uploaded_buffer_ranges.empty()) {
-        for (const auto& [address, size] : uploaded_buffer_ranges) {
-            device_memory.HintCold(address, size);
+        if (Nx2Profile::Enabled() && !read_back_pages.empty()) {
+            LOG_INFO(HW_GPU, "Read-back pages in 600 frames: {} of {} learned, {} pushed out",
+                     read_back_pages.size(), MaxReadBackPages(), read_back_evictions);
         }
-        uploaded_buffer_ranges.clear();
+        read_back_evictions = 0;
     }
+    uploaded_buffer_ranges.Tick(frame_tick, device_memory, "Buffer cache");
     if (static u64 frames{}; ++frames % 600 == 0) {
         u64 total{};
         size_t count{};
@@ -885,7 +885,8 @@ void BufferCache<P>::NoteReadBack(DAddr begin, DAddr end, bool gpu_modified) {
                 if (!gpu_modified) {
                     continue;
                 }
-                if (read_back_pages.size() >= MaxReadBackPages) {
+                if (read_back_pages.size() >= MaxReadBackPages()) {
+                    ++read_back_evictions;
                     // The page whose writes were read longest ago makes room.
                     read_back_pages.erase(
                         std::ranges::min_element(read_back_pages, {}, &ReadBackPage::last_read));
@@ -1000,7 +1001,7 @@ void BufferCache<P>::NoteEarlyLanded(const ReadDownload& download,
                                      const Common::RangeSet<DAddr>& cpu_written) {
     // Pages no read came for since keep theirs until a download lands there. Bounded: past it,
     // their reads are not compared.
-    if (early_landed.size() >= 4 * MaxReadBackPages) {
+    if (early_landed.size() >= 4 * MaxReadBackPages()) {
         early_landed.clear();
     }
     download.clean_ranges.ForEach([&](DAddr start, DAddr end) {
@@ -3830,7 +3831,7 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
             // Large uploads are mostly geometry the host GPU now has its own copy of: TickFrame
             // marks their guest memory cold (see TextureCache::RefreshContents).
             if (copy.size >= 256_KiB) {
-                uploaded_buffer_ranges.emplace_back(device_addr, copy.size);
+                uploaded_buffer_ranges.Add(device_addr, copy.size);
             }
             // Apply the staging offset
             copy.src_offset += upload_staging.offset;

@@ -35,6 +35,7 @@
 #include "common/slot_vector.h"
 #include "video_core/texture_cache/pending_download.h"
 #include "common/thread_worker.h"
+#include "video_core/cold_hint_queue.h"
 #include "video_core/compatible_formats.h"
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/delayed_destruction_ring.h"
@@ -740,8 +741,8 @@ private:
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},
                                                Common::ThreadPlacement::Efficiency};
     std::vector<std::unique_ptr<AsyncDecodeContext>> async_decodes;
-    /// Guest memory images were uploaded from since the last cold hint (device address, size).
-    std::vector<std::pair<DAddr, u64>> uploaded_ranges;
+    /// Guest memory images were uploaded from, marked cold every 600 frames.
+    ColdHintQueue uploaded_ranges;
 
     std::deque<PendingUnswizzle> unswizzle_queue;
     u8 current_unswizzle_frame;

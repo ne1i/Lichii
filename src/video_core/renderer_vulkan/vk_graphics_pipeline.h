@@ -353,6 +353,11 @@ private:
 
     void MakePipeline(VkRenderPass render_pass);
 
+    /// Vulkan worker, before an unbuilt pipeline's draw: waits for the build, at most
+    /// EDEN_NX2_WORKER_PIPELINE_WAIT_MS in total per pipeline. False when it gave up: the draw is
+    /// dropped (worker_drops) and the bound pipeline is marked missing.
+    bool WorkerWaitBuild();
+
     void Validate();
 
     const GraphicsPipelineCacheKey key;
@@ -423,6 +428,10 @@ private:
     u64 last_descriptor_buffer_generation{};
 
     const bool worker_only_build;
+    /// Vulkan worker only (WorkerWaitBuild): time waited for the build, and whether the draw
+    /// being executed is dropped.
+    std::chrono::microseconds worker_waited{};
+    bool worker_drops{};
     bool uses_push_descriptor{false};
     bool uses_descriptor_buffer{false};
 

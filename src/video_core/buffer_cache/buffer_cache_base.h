@@ -46,6 +46,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_download_trace.h"
+#include "video_core/cold_hint_queue.h"
 #include "video_core/nx2_async_readback.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/rasterizer_download_area.h"
@@ -1046,7 +1047,20 @@ private:
     static constexpr u16 EarlyAfterReads = 2;
     /// Writes in a row without a read that stop them.
     static constexpr u16 MaxUnreadWrites = 4;
-    static constexpr size_t MaxReadBackPages = 64;
+    /// Pages the table learns, least recently read out first: EDEN_NX2_READBACK_PAGES (default 64).
+    [[nodiscard]] static size_t MaxReadBackPages() {
+        static const size_t pages = [] {
+            size_t value = 64;
+            if (const char* const env = std::getenv("EDEN_NX2_READBACK_PAGES")) {
+                value = (std::max)(static_cast<size_t>(std::strtoull(env, nullptr, 10)),
+                                   size_t{1});
+                LOG_INFO(HW_GPU, "EDEN_NX2_READBACK_PAGES: the read-back table learns {} pages",
+                         value);
+            }
+            return value;
+        }();
+        return pages;
+    }
     /// Early download bytes a frame, and early downloads not yet in guest memory: past them, reads
     /// flush on demand.
     static constexpr u64 EarlyBytesPerFrame = 1_MiB;
@@ -1062,6 +1076,7 @@ private:
     /// Pages to download once the work writing them is recorded.
     boost::container::small_vector<DAddr, 8> early_pages;
     u64 read_back_reads{};
+    u64 read_back_evictions{}; ///< Learned pages pushed out, logged every 600 frames
     u64 early_bytes_this_frame{};
     u32 pending_early_downloads{};
     u32 early_landing_checks{};
@@ -1071,8 +1086,8 @@ private:
     size_t immediate_buffer_capacity = 0;
     Common::ScratchBuffer<u8> immediate_buffer_alloc;
     std::vector<u8> guest_uint8_indices;
-    /// Guest memory large uploads came from since the last cold hint (device address, size).
-    std::vector<std::pair<DAddr, u64>> uploaded_buffer_ranges;
+    /// Guest memory large uploads came from, marked cold every 600 frames.
+    VideoCommon::ColdHintQueue uploaded_buffer_ranges;
 
     struct LRUItemParams {
         using ObjectType = BufferId;
