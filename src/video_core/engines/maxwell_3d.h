@@ -3281,6 +3281,10 @@ public:
     /// A vertex stream's address, size or limit (not its stride or enable).
     static bool IsFastDrawVertexBuffer(u32 method);
     void NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end);
+    /// IsFastDrawParameter(method), and whether a method ProcessMethodCall runs keeps fast draw
+    /// reuse (an instance loop or delta method), from method_classes with EDEN_NX2_OPT_REG_TABLE.
+    bool FastDrawParameter(u32 method) const;
+    bool FastDrawNeutralMethod(u32 method) const;
 
     /// Handles a write to the CB_DATA[i] register.
     void ProcessCBData(u32 value);
@@ -3401,6 +3405,15 @@ private:
         return value == nullptr || value[0] != '0';
     }();
     const bool perf_verify = VideoCommon::Nx2Perf::Verify();
+    /// EDEN_NX2_OPT_REG_TABLE (default on): the fast draw classification of each register,
+    /// computed once (bits MethodFastDrawParameter, MethodFastDrawNeutral) instead of per write.
+    /// EDEN_NX2_OPT_REG_TABLE_VERIFY=1 compares each lookup with the functions.
+    static constexpr u8 MethodFastDrawParameter = 1;
+    static constexpr u8 MethodFastDrawNeutral = 2;
+    std::array<u8, Regs::NUM_REGS> method_classes{};
+    bool opt_reg_table{};
+    bool opt_reg_table_verify{};
+    void VerifyMethodClass(u32 method, bool looked_up, bool computed, const char* what) const;
     /// Parameters that have been submitted to the macro call so far.
     std::vector<u32> macro_params;
 

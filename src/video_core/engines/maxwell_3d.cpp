@@ -46,6 +46,34 @@ namespace Tegra::Engines {
 /// First register id that is actually a Macro call.
 constexpr u32 MacroRegistersStart = 0xE00;
 
+namespace {
+
+/// EDEN_NX2_OPT_REG_TABLE=0: classify each register write with the IsFastDraw* functions, as
+/// before, instead of a table built once per engine.
+bool OptRegTableEnabled() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_OPT_REG_TABLE");
+        const bool on = value == nullptr || value[0] != '0';
+        LOG_INFO(HW_GPU, "EDEN_NX2_OPT_REG_TABLE: {}", on ? "on" : "off");
+        return on;
+    }();
+    return enabled;
+}
+
+bool OptRegTableVerify() {
+    static const bool verify = [] {
+        const char* const value = std::getenv("EDEN_NX2_OPT_REG_TABLE_VERIFY");
+        const bool on = value != nullptr && value[0] == '1';
+        if (on) {
+            LOG_INFO(HW_GPU, "EDEN_NX2_OPT_REG_TABLE_VERIFY: on");
+        }
+        return on;
+    }();
+    return verify;
+}
+
+} // Anonymous namespace
+
 Maxwell3D::Maxwell3D(MemoryManager& memory_manager_)
     : draw_manager()
     , memory_manager{memory_manager_}
@@ -62,6 +90,15 @@ Maxwell3D::Maxwell3D(MemoryManager& memory_manager_)
     execution_mask.reset();
     for (size_t i = 0; i < execution_mask.size(); i++)
         execution_mask[i] = IsMethodExecutable(u32(i));
+    opt_reg_table = OptRegTableEnabled();
+    opt_reg_table_verify = opt_reg_table && OptRegTableVerify();
+    for (u32 method = 0; method < Regs::NUM_REGS; ++method) {
+        method_classes[method] = static_cast<u8>(
+            (IsFastDrawParameter(method) ? MethodFastDrawParameter : 0) |
+            (DrawManager::IsInstanceLoopMethod(method) || IsFastDrawDeltaMethod(method)
+                 ? MethodFastDrawNeutral
+                 : 0));
+    }
     fast_maxwell3d = !record_write_history &&
                      !trace_first_method_writes && !VideoCommon::Nx2Profile::Enabled();
 }
@@ -364,12 +401,49 @@ void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
         draw_manager.DrawDeferred(*this, true);
     }
     if (VideoCommon::Nx2FastDraw::Enabled() && regs.reg_array[method] != argument &&
-        !IsFastDrawParameter(method)) {
+        !FastDrawParameter(method)) {
         VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Register, method);
     }
     regs.reg_array[method] = argument;
     for (auto const& table : dirty.tables)
         dirty.flags[table[method]] = true;
+}
+
+bool Maxwell3D::FastDrawParameter(u32 method) const {
+    if (!opt_reg_table || method >= Regs::NUM_REGS) {
+        return IsFastDrawParameter(method);
+    }
+    const bool parameter = (method_classes[method] & MethodFastDrawParameter) != 0;
+    if (opt_reg_table_verify) {
+        VerifyMethodClass(method, parameter, IsFastDrawParameter(method), "parameter");
+    }
+    return parameter;
+}
+
+bool Maxwell3D::FastDrawNeutralMethod(u32 method) const {
+    if (!opt_reg_table || method >= Regs::NUM_REGS) {
+        return DrawManager::IsInstanceLoopMethod(method) || IsFastDrawDeltaMethod(method);
+    }
+    const bool neutral = (method_classes[method] & MethodFastDrawNeutral) != 0;
+    if (opt_reg_table_verify) {
+        VerifyMethodClass(method, neutral,
+                          DrawManager::IsInstanceLoopMethod(method) ||
+                              IsFastDrawDeltaMethod(method),
+                          "neutral method");
+    }
+    return neutral;
+}
+
+void Maxwell3D::VerifyMethodClass(u32 method, bool looked_up, bool computed,
+                                  const char* what) const {
+    if (looked_up == computed) {
+        return;
+    }
+    static std::atomic<u32> reports{};
+    if (reports.fetch_add(1, std::memory_order_relaxed) < 16) {
+        LOG_ERROR(HW_GPU, "Register table verify: method {:#x} fast draw {}: table {}, function {}",
+                  method, what, looked_up, computed);
+    }
 }
 
 bool Maxwell3D::IsFastDrawParameter(u32 method) {
@@ -424,7 +498,7 @@ bool Maxwell3D::IsFastDrawDeltaMethod(u32 method) {
 }
 
 void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call) {
-    if (!DrawManager::IsInstanceLoopMethod(method) && !IsFastDrawDeltaMethod(method)) {
+    if (!FastDrawNeutralMethod(method)) {
         VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Method, method);
     }
     if (GetNativeMacroEngine().native_turing && method == MAXWELL3D_REG_INDEX(clear_surface)) {
