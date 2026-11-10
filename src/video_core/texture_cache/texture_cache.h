@@ -364,7 +364,19 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     const u64 budget_expected = expected_memory;
     u64 max_critical = MaxCriticalMemory;
     if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
-        max_critical = (std::max)(max_critical, runtime.GetDeviceMemoryBudget() / 8 * 5);
+        const u64 budget = runtime.GetDeviceMemoryBudget();
+        max_critical = (std::max)(max_critical, budget / 8 * 5);
+        // Larger budgets, native titles only: 5/8 left ~7.3 GiB on a 12 GB RX 6700 XT, under what
+        // Ocarina's Kokiri Forest keeps alive, so every aggressive pass evicted its CostlyLoad ASTC
+        // textures (a 6144x6144 5x5 one, 31 MiB) and the game re-created them ~128 frames later:
+        // a 24 ms texture stall every ~3 s. From 10 GiB of budget on, keep 2.5 GiB for everything
+        // else; between 8 and 10 GiB ramp up to that from 5/8, so a budget moving across a size
+        // does not move the threshold in a step. Only the native path re-reads the budget (every
+        // 30 frames), so only it may sit this close to the budget.
+        if (native_thresholds_applied && budget > 8_GiB) {
+            const u64 ramp = budget + budget / 4 - 5_GiB; // 5/8 of it at 8 GiB, joins below at 10
+            max_critical = (std::max)(max_critical, (std::min)(ramp, budget - 2560_MiB));
+        }
     }
     critical_memory = (std::min)(critical_memory, max_critical);
     expected_memory =
