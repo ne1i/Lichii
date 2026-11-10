@@ -94,6 +94,9 @@ u32 EvaluateShift(IR::Value value) {
         return std::bit_cast<u32>(std::fma(std::bit_cast<float>(arg(0)),
                                          std::bit_cast<float>(arg(1)),
                                          std::bit_cast<float>(arg(2))));
+    case IR::Opcode::FPMax32:
+        return std::bit_cast<u32>(
+            std::max(std::bit_cast<float>(arg(0)), std::bit_cast<float>(arg(1))));
     case IR::Opcode::BitwiseAnd32:
         return arg(0) & arg(1);
     case IR::Opcode::BitwiseOr32:
@@ -590,4 +593,112 @@ TEST_CASE("Gradient texture fetch shadows keep the array layer register",
     CHECK(((*native >> 8) & 0xff) == 210);
     const u32 gradients = static_cast<u32>((*native >> 20) & 0xff);
     CHECK((gradients + 4 <= 210 || gradients >= 213));
+}
+
+TEST_CASE("Ocarina static sweep high-register operands preserve encoding fields",
+          "[video_core][ampere][logged_numeric][ocarina]") {
+    // The instructions at which 15 of the game's mesh and vertex programs were rejected with
+    // "native register shadowing mode" when lowered from the game files.
+    struct Fixture {
+        Instruction instruction;
+        std::vector<u32> fields;
+    };
+    const std::array fixtures{
+        // R2UR UR35, R243; UR33, R216; UR4, R228: bits 16 to 23 name a uniform register.
+        Fixture{{{0xf32373c2, 0x00000000, 0x000e0000, 0x000e2400}}, {24}},
+        Fixture{{{0xd82173c2, 0x00000000, 0x000e0000, 0x000e3000}}, {24}},
+        Fixture{{{0xe40473c2, 0x00000000, 0x000e0000, 0x000e2400}}, {24}},
+        // FMNMX R217, R217, 1e-5 (and R242, R222).
+        Fixture{{{0xd9d97809, 0x3727c5ac, 0x07810000, 0x000fe200}}, {16, 24}},
+        Fixture{{{0xf2f27809, 0x3727c5ac, 0x07810000, 0x001fe200}}, {16, 24}},
+        Fixture{{{0xdede7809, 0x3727c5ac, 0x07810000, 0x001fe200}}, {16, 24}},
+        // @!P0 FMUL R219, R219, UR36.
+        Fixture{{{0xdbdb8c20, 0x00000024, 0x08410000, 0x000fe200}}, {16, 24}},
+        // P2R R221, PR, RZ, 0x1 (and R222).
+        Fixture{{{0xffdd7803, 0x00000001, 0x00000000, 0x000fe200}}, {16, 24}},
+        Fixture{{{0xffde7803, 0x00000001, 0x00000000, 0x000fe400}}, {16, 24}},
+        // I2FP.F32.U32 R250, UR11.
+        Fixture{{{0x00fa7c45, 0x0000000b, 0x08201400, 0x000fe200}}, {16}},
+        // LDC.64 R206 indexed by R227: the destination is a register pair.
+        Fixture{{{0xe3ce7b82, 0x01c00400, 0x00000a00, 0x000e3000}}, {16, 24}},
+        // FFMA R37, R24, UR5, R227: found once R2UR above lowered.
+        Fixture{{{0x18257c23, 0x00000005, 0x080100e3, 0x002fe200}}, {16, 24, 64}},
+    };
+    for (const auto& fixture : fixtures) {
+        const auto& instruction = fixture.instruction;
+        CAPTURE(instruction.words);
+        const auto pressure = Shader::Ampere::PrepareRegisterPressure(instruction, 216);
+        REQUIRE(pressure.valid);
+        CHECK(pressure.prefix.size() == 8);
+        CHECK(pressure.suffix.size() == 8);
+        std::array<u32, 4> masks{};
+        for (const u32 field : fixture.fields) {
+            masks[field / 32] |= 255U << (field % 32);
+            const u32 original = instruction.Bits(field, 8);
+            if (original >= 216 && original != 255) {
+                CHECK(pressure.instruction.Bits(field, 8) == 212 + original % 4);
+            } else {
+                CHECK(pressure.instruction.Bits(field, 8) == original);
+            }
+        }
+        for (u32 word = 0; word < 4; ++word) {
+            CHECK((pressure.instruction.words[word] & ~masks[word]) ==
+                  (instruction.words[word] & ~masks[word]));
+        }
+        const Instruction uniform_marker{{0x0000fc02, 0, 0, 0}};
+        const auto lowered = LowerToMaxwell(std::array{uniform_marker, instruction, Exit});
+        INFO(lowered.error);
+        REQUIRE(lowered);
+    }
+
+    // With the mirrors at R204 the pair R206, R207 is shadowed too, and stays a pair.
+    const Instruction load{{0xe3ce7b82, 0x01c00400, 0x00000a00, 0x000e3000}};
+    const auto pressure = Shader::Ampere::PrepareRegisterPressure(load, 204);
+    REQUIRE(pressure.valid);
+    CHECK(pressure.instruction.Bits(16, 8) == 202);
+    CHECK(pressure.instruction.Bits(24, 8) == 199);
+    CHECK(pressure.prefix.size() == 16);
+    CHECK(pressure.suffix.size() == 16);
+}
+
+TEST_CASE("Ocarina static sweep shadowed floating arithmetic preserves values",
+          "[video_core][ampere][logged_numeric][ocarina]") {
+    struct Source {
+        u32 bank, reg;
+    };
+    struct Fixture {
+        Instruction instruction;
+        std::vector<Source> sources;
+        float expected;
+    };
+    // Every source holds 2.0. A uniform register is read from its mirror in bank 0: UR5 at R221,
+    // and UR36 at R212 (mirrors at R204, the next aligned base under UR36's R206).
+    const std::array fixtures{
+        // FMNMX R217, R217, 1e-5 takes the larger one.
+        Fixture{{{0xd9d97809, 0x3727c5ac, 0x07810000, 0x000fe200}}, {{1, 217}}, 2.0f},
+        // FMUL R219, R219, UR36 without its guard.
+        Fixture{{{0xdbdb7c20, 0x00000024, 0x08410000, 0x000fe200}}, {{1, 219}, {0, 212}}, 4.0f},
+        // FFMA R37, R24, UR5, R227.
+        Fixture{{{0x18257c23, 0x00000005, 0x080100e3, 0x002fe200}},
+                {{0, 24}, {0, 221}, {1, 227}},
+                6.0f},
+    };
+    for (const auto& fixture : fixtures) {
+        CAPTURE(fixture.instruction.words);
+        const Instruction uniform_marker{{0x0000fc02, 0, 0, 0}};
+        const auto lowered = LowerToMaxwell(std::array{uniform_marker, fixture.instruction, Exit});
+        INFO(lowered.error);
+        REQUIRE(lowered);
+        std::vector<u64> code{0x0100000000070000ULL | (15ULL << 12) | (0x40000000ULL << 20)};
+        for (const auto [bank, reg] : fixture.sources) {
+            code.push_back(Shader::Ampere::NativeRegisterCopy(bank, reg, 0, 0));
+        }
+        code.insert(code.end(), lowered.instructions.begin(), lowered.instructions.end() - 1);
+        const u32 destination = fixture.instruction.Bits(16, 8);
+        code.push_back(
+            Shader::Ampere::NativeRegisterCopy(0, 0, destination >= 216 ? 1 : 0, destination));
+        code.push_back(Store(0));
+        code.push_back(lowered.instructions.back());
+        TranslateAndEmit(code, std::bit_cast<u32>(fixture.expected));
+    }
 }
