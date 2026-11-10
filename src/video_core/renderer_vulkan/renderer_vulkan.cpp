@@ -256,8 +256,14 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
                       GuestExtent(framebuffers));
 
     const size_t generated_frames = frame_gen.GeneratedFrameCount();
+    // Each generated frame keeps the screen for an equal share of the real frame interval. Sent
+    // back to back, a high refresh rate display shows it for one refresh only.
+    const auto spacing = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<f32>(std::min(frame_gen.FrameInterval(), 0.1f) /
+                                   static_cast<f32>(generated_frames + 1)));
     for (size_t generation = 0; generation < generated_frames; ++generation) {
         Frame* generated = present_manager.GetRenderFrame();
+        generated->present_spacing = spacing;
         blit_swapchain.PrepareFrame(device, generated, render_window.GetFramebufferLayout());
         frame_gen.GenerateInto(device, generated, generation);
         scheduler.Flush(*generated->render_ready);

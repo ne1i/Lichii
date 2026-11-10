@@ -4,8 +4,14 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <thread>
+
+#include "common/dkb_frame_trace.h"
 #include "common/settings.h"
 #include "common/thread.h"
+#ifdef _WIN32
+#include "common/windows/timer_resolution.h"
+#endif
 #include "core/frontend/emu_window.h"
 #include "video_core/nx2_profile.h"
 #ifdef HAS_LSFG
@@ -28,6 +34,22 @@ constexpr u32 MAX_PRESENT_ATTEMPTS = 3;
 #ifdef HAS_LSFG
 static_assert(MAX_FRAMES_IN_FLIGHT <= LSFG_MAX_TARGETS);
 #endif
+
+// Sleeps until the deadline, without spinning: it may pass by up to a timer tick (about 0.5 ms
+// on Windows), well within a refresh, and the next deadline counts from the actual present.
+void SleepUntil(std::chrono::steady_clock::time_point deadline) {
+    while (true) {
+        const auto left = deadline - std::chrono::steady_clock::now();
+        if (left <= std::chrono::steady_clock::duration::zero()) {
+            return;
+        }
+#ifdef _WIN32
+        Common::Windows::SleepForOneTick();
+#else
+        std::this_thread::sleep_for(left);
+#endif
+    }
+}
 
 bool CanStoreToFrame(const vk::PhysicalDevice& physical_device, VkFormat format) {
 #ifdef HAS_LSFG
@@ -130,7 +152,10 @@ PresentManager::PresentManager(const vk::Instance& instance_,
     , surface{surface_}
     , blit_supported{CanBlitToSwapchain(device.GetPhysical(), swapchain.GetImageViewFormat())}
     , storage_supported{CanStoreToFrame(device.GetPhysical(), swapchain.GetImageFormat())}
-    , use_present_thread{Settings::values.async_presentation.GetValue()}
+    // Frame generation needs the present thread to space generated frames without stalling the
+    // emulator.
+    , use_present_thread{Settings::values.async_presentation.GetValue() ||
+                         Settings::values.frame_gen.GetValue()}
 {
     SetImageCount();
 
@@ -164,7 +189,38 @@ PresentManager::PresentManager(const vk::Instance& instance_,
     }
 
     if (use_present_thread) {
-        present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
+        StartPresentThread();
+    }
+}
+
+void PresentManager::StartPresentThread() {
+    use_present_thread = true;
+    present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
+}
+
+void PresentManager::LogPacing(const Frame* frame, std::chrono::steady_clock::duration took,
+                               std::chrono::steady_clock::time_point now) {
+    if (!Settings::values.frame_gen.GetValue()) {
+        return;
+    }
+    const bool generated = frame->present_spacing.count() != 0;
+    ++(generated ? pacing_log.generated : pacing_log.real);
+    pacing_log.spacing += frame->present_spacing;
+    pacing_log.present_time += took;
+    if (pacing_log.since == std::chrono::steady_clock::time_point{}) {
+        pacing_log.since = now;
+    } else if (now - pacing_log.since >= std::chrono::seconds(10)) {
+        const auto ms = [](auto duration) {
+            return std::chrono::duration<double, std::milli>(duration).count();
+        };
+        const u64 total = pacing_log.real + pacing_log.generated;
+        LOG_INFO(Render_Vulkan,
+                 "Frame gen pacing (10 s): {} real and {} generated presents, spacing {:.2f} ms "
+                 "after each generated frame, {:.2f} ms average wait and present",
+                 pacing_log.real, pacing_log.generated,
+                 pacing_log.generated ? ms(pacing_log.spacing) / pacing_log.generated : 0.0,
+                 total ? ms(pacing_log.present_time) / total : 0.0);
+        pacing_log = {.since = now};
     }
 }
 
@@ -184,11 +240,17 @@ Frame* PresentManager::GetRenderFrame() {
     // Wait for the presentation to be finished so all frame resources are free
     frame->present_done.Wait();
     frame->present_done.Reset();
+    frame->present_spacing = {};
 
     return frame;
 }
 
 void PresentManager::Present(Frame* frame) {
+    if (!use_present_thread && Settings::values.frame_gen.GetValue()) {
+        // Frame generation was turned on from the status bar while a game runs. Earlier frames
+        // were presented here, so none are in flight.
+        StartPresentThread();
+    }
     if (use_present_thread) {
         scheduler.Record([this, frame](vk::CommandBuffer) {
             std::unique_lock lock{queue_mutex};
@@ -350,7 +412,16 @@ void PresentManager::PresentThread(std::stop_token token) {
             // before the queue lock goes out of scope. This way the swapchain
             // lock in WaitPresent is guaranteed to occur after here.
             void(std::exchange(lock, std::unique_lock{swapchain_mutex}));
+            const bool trace = Common::DkbFrameTrace::Enabled();
+            const auto ready = trace ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
+            SleepUntil(next_present);
             CopyToSwapchain(frame);
+            const auto presented = std::chrono::steady_clock::now();
+            next_present = presented + frame->present_spacing;
+            if (trace) {
+                LogPacing(frame, presented - ready, presented);
+            }
 
             // Free the frame for reuse
             std::scoped_lock fl{free_mutex};

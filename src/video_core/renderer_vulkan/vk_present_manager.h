@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <boost/container/deque.hpp>
@@ -38,6 +39,9 @@ struct Frame {
     vk::Semaphore render_ready;
     vk::Fence present_done;
     bool storage_capable{};
+    /// Time the present thread leaves before presenting the next frame. Frame generation sets it
+    /// on generated frames, so they share the screen time evenly with the real ones.
+    std::chrono::nanoseconds present_spacing{};
 };
 
 class PresentManager {
@@ -73,6 +77,8 @@ public:
     [[nodiscard]] VkFormat SwapchainImageFormat() const { return swapchain_image_format; }
 
 private:
+    void StartPresentThread();
+
     void PresentThread(std::stop_token token);
 
     void CopyToSwapchain(Frame* frame);
@@ -84,6 +90,10 @@ private:
     void DiscardFrame(Frame* frame);
 
     void SetImageCount();
+
+    /// With EDEN_DKB_FRAME_TRACE=1 and frame generation on, logs the presents of every 10 s.
+    void LogPacing(const Frame* frame, std::chrono::steady_clock::duration took,
+                   std::chrono::steady_clock::time_point now);
 
 private:
     const vk::Instance& instance;
@@ -109,6 +119,15 @@ private:
     std::atomic<std::size_t> image_count{};
     std::atomic<std::size_t> swapchain_image_count{};
     std::atomic<VkFormat> swapchain_image_format{};
+    /// The present thread presents no frame before this (Frame::present_spacing).
+    std::chrono::steady_clock::time_point next_present{};
+    struct {
+        std::chrono::steady_clock::time_point since{};
+        u64 real{};
+        u64 generated{};
+        std::chrono::nanoseconds spacing{};
+        std::chrono::steady_clock::duration present_time{};
+    } pacing_log;
 };
 
 } // namespace Vulkan

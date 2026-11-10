@@ -21,6 +21,11 @@ public:
 
     void Reset();
 
+    /// The smoothed time between real frames in seconds, or 0 while it is unknown.
+    [[nodiscard]] f32 SmoothedInterval() const {
+        return smoothed_interval;
+    }
+
 private:
     using Clock = std::chrono::steady_clock;
 
