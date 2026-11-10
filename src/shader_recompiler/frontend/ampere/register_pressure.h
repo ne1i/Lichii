@@ -183,6 +183,7 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         break;
     case 0x419:
     case 0x819:
+    case 0xc19: // SHF with a uniform shift amount: Rd and the low and high words are registers
         operand(16);
         operand(24);
         operand(64);
