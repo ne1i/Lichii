@@ -1016,7 +1016,7 @@ void Summarize(double window_s) {
     for (size_t svc = 0; svc < SvcSlots; ++svc) {
         order[svc] = svc;
     }
-    const auto svc_window = [&svc_ticks, &reader](size_t svc) {
+    const auto svc_window = [&svc_ticks](size_t svc) {
         return Sub(svc_ticks[svc], reader.window_svc_ticks[svc]);
     };
     std::partial_sort(order.begin(), order.begin() + SummarySvcs, order.end(),
