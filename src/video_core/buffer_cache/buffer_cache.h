@@ -19,6 +19,8 @@
 #include <utility>
 #include <vector>
 #include <fmt/ranges.h>
+#define XXH_INLINE_ALL // header-only use, as shader_cache_v2/records.cpp
+#include <xxhash.h>
 
 #include "common/nx2_guest_trace.h"
 #include "common/range_sets.inc"
@@ -136,6 +138,13 @@ void BufferCache<P>::TickFrame() {
                      stats.syncs_skipped, stats.syncs, stats.verify_mismatches);
         }
         geometry_stats = {};
+    }
+    if (frame_tick % 600 == 0) {
+        if (Nx2Profile::Enabled() || Nx2Perf::Verify()) {
+            LOG_INFO(HW_GPU, "Native uniform banks in 600 frames: {} uploaded ({} MiB), {} unchanged skipped",
+                     native_bank_stats.uploaded, native_bank_stats.bytes >> 20, native_bank_stats.skipped);
+        }
+        native_bank_stats = {};
     }
     if (frame_tick % 600 == 0) {
         UniformKeep& keep = uniform_keep;
@@ -2537,14 +2546,33 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         (Nx2Perf::Verify() || !native_indirect_uniforms_this_frame.contains(device_addr)) &&
         !memory_tracker.IsRegionGpuModified(device_addr, size) &&
         native_indirect_uniforms_this_frame.insert(device_addr).second) {
-        // The bank size is only an upper limit: stop at the end of the mapped memory.
+        // The bank size is only an upper limit: stop at the end of the mapped memory. Hash the
+        // bytes on the way: a bank whose bytes match its last upload into the same buffer is
+        // already current on the host, so the copy (and the transfer it records) is skipped.
         u64 mapped_size = 0;
-        while (mapped_size < size &&
-               device_memory.template GetPointer<u8>(device_addr + mapped_size) != nullptr) {
-            mapped_size += Core::DEVICE_PAGESIZE - ((device_addr + mapped_size) & Core::DEVICE_PAGEMASK);
+        u64 bank_hash = 0;
+        while (mapped_size < size) {
+            const u8* const page = device_memory.template GetPointer<u8>(device_addr + mapped_size);
+            if (page == nullptr) {
+                break;
+            }
+            const u64 chunk = (std::min<u64>)(
+                Core::DEVICE_PAGESIZE - ((device_addr + mapped_size) & Core::DEVICE_PAGEMASK),
+                size - mapped_size);
+            bank_hash = XXH3_64bits_withSeed(page, chunk, bank_hash); // chained per page
+            mapped_size += chunk;
         }
         const u64 upload_size = (std::min<u64>)(mapped_size, size);
-        if (upload_size != 0) {
+        NativeBankUpload& last_upload = native_bank_uploads[device_addr];
+        const bool bank_unchanged = !Nx2Perf::Verify() && last_upload.hash == bank_hash &&
+                                    last_upload.size == upload_size &&
+                                    last_upload.buffer_id == binding.buffer_id;
+        if (bank_unchanged) {
+            ++native_bank_stats.skipped;
+        } else if (upload_size != 0) {
+            last_upload = NativeBankUpload{bank_hash, upload_size, binding.buffer_id};
+            ++native_bank_stats.uploaded;
+            native_bank_stats.bytes += upload_size;
             std::array<BufferCopy, 1> copies{BufferCopy{
                 .src_offset = 0,
                 .dst_offset = buffer.Offset(device_addr),
@@ -4041,6 +4069,9 @@ template <class P>
 void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     const StutterTrace::SiteScope site{StutterTrace::Site::BufferDelete};
     ++buffer_deletions;
+    // A slot id is reused by the next buffer: forget the native banks uploaded into this one.
+    std::erase_if(native_bank_uploads,
+                  [buffer_id](const auto& entry) { return entry.second.buffer_id == buffer_id; });
     if constexpr (requires { runtime.OnBufferDeleted(slot_buffers[buffer_id]); }) {
         runtime.OnBufferDeleted(slot_buffers[buffer_id]);
     }

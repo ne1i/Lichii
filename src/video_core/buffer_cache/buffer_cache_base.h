@@ -542,6 +542,18 @@ public:
     bool any_buffer_uploaded = false;
     /// Indirectly read banks of native programs already uploaded this frame.
     std::unordered_set<DAddr> native_indirect_uniforms_this_frame;
+    /// Last per-frame upload of each native 64 KiB uniform bank (see BindHostGraphicsUniformBuffer).
+    struct NativeBankUpload {
+        u64 hash{};
+        u64 size{};
+        BufferId buffer_id{};
+    };
+    std::unordered_map<DAddr, NativeBankUpload> native_bank_uploads;
+    struct {
+        u64 uploaded{};
+        u64 skipped{};
+        u64 bytes{};
+    } native_bank_stats;
 
 private:
     template <typename Mask, typename Func>
