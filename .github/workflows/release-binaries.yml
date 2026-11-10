@@ -97,13 +97,6 @@ jobs:
             runner: windows-2022
             pgo: true
             profile: lichii-windows.profdata
-          - platform: linux-aarch64
-            runner: ubuntu-24.04-arm
-          - platform: linux-aarch64-pgo
-            runner: ubuntu-24.04-arm
-            pgo: true
-          - platform: macos-arm64
-            runner: macos-15
 
     steps:
       - name: Check out source
